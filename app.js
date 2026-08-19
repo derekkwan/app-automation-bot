@@ -12,7 +12,7 @@ const headers = {
     'Accept': 'application/json'
 };
 
-// Phân ngành cố định cho danh sách VN30
+// Danh sách các mã VN30 phân theo ngành
 const VN30_SECTORS = {
     "🏦 Ngân hàng": ["ACB", "BID", "CTG", "HDB", "MBB", "SSB", "STB", "TCB", "TPB", "VCB", "VIB", "VPB"],
     "🏢 Bất động sản": ["BCM", "VHM", "VIC", "VRE"],
@@ -86,18 +86,21 @@ async function getGlobalMarketData() {
            `• *Dầu WTI:* ${oil}/thùng`;
 }
 
-// 3. Lấy giá VN30 phân ngành trực tiếp từ SSI iBoard (1 request duy nhất)
+// 3. Lấy giá VN30 từ VNDirect API v2 (1 request cực nhanh và không bị chặn IP)
 async function getVN30Data() {
     try {
-        const url = 'https://iboard.ssi.com.vn/v2/stock/exchange/vn30';
+        const allTickers = Object.values(VN30_SECTORS).flat().join(',');
+        const url = `https://api-price.vndirect.com.vn/v2/stock/multi?q=code:${allTickers}`;
+        
         const res = await fetch(url, { headers });
         const json = await res.json();
 
         const priceMap = {};
         if (json && json.data && Array.isArray(json.data)) {
             json.data.forEach(item => {
-                const ticker = item.stockSymbol;
-                const price = item.matchedPrice || item.lastPrice || item.refPrice;
+                const ticker = item.code;
+                // Lấy giá khớp gần nhất -> nếu không có thì lấy giá tham chiếu/đóng cửa
+                const price = item.matchPrice || item.closePrice || item.basicPrice;
                 if (ticker && price) {
                     priceMap[ticker] = (parseFloat(price) * 1000).toLocaleString('vi-VN') + 'đ';
                 }
@@ -115,7 +118,7 @@ async function getVN30Data() {
 
         return output;
     } catch (error) {
-        console.error("Lỗi lấy dữ liệu VN30 từ SSI:", error.message);
+        console.error("Lỗi lấy dữ liệu VN30:", error.message);
         return "• VN30: Không lấy được dữ liệu";
     }
 }
