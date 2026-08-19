@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const express = require('express'); we
+const express = require('express');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -12,7 +12,7 @@ const headers = {
     'Accept': 'application/json'
 };
 
-// Phân ngành cố định cho VN30
+// Phân ngành cố định cho danh sách VN30
 const VN30_SECTORS = {
     "🏦 Ngân hàng": ["ACB", "BID", "CTG", "HDB", "MBB", "SSB", "STB", "TCB", "TPB", "VCB", "VIB", "VPB"],
     "🏢 Bất động sản": ["BCM", "VHM", "VIC", "VRE"],
@@ -86,22 +86,18 @@ async function getGlobalMarketData() {
            `• *Dầu WTI:* ${oil}/thùng`;
 }
 
-// 3. Lấy giá VN30 phân ngành từ DNSE Entrade API (Hoạt động tốt trên Cloud)
-// Lấy giá toàn bộ VN30 bằng 1 request duy nhất qua Simplize API
+// 3. Lấy giá VN30 phân ngành trực tiếp từ SSI iBoard (1 request duy nhất)
 async function getVN30Data() {
     try {
-        const allTickers = Object.values(VN30_SECTORS).flat().join(',');
-        const url = `https://api.simplize.vn/api/historical/quote/multi-stock?symbols=${allTickers}`;
-        
+        const url = 'https://iboard.ssi.com.vn/v2/stock/exchange/vn30';
         const res = await fetch(url, { headers });
         const json = await res.json();
 
         const priceMap = {};
         if (json && json.data && Array.isArray(json.data)) {
             json.data.forEach(item => {
-                const ticker = item.ticker || item.symbol;
-                // Lấy giá đóng cửa hoặc giá hiện tại
-                const price = item.close || item.price || item.lastPrice;
+                const ticker = item.stockSymbol;
+                const price = item.matchedPrice || item.lastPrice || item.refPrice;
                 if (ticker && price) {
                     priceMap[ticker] = (parseFloat(price) * 1000).toLocaleString('vi-VN') + 'đ';
                 }
@@ -119,13 +115,12 @@ async function getVN30Data() {
 
         return output;
     } catch (error) {
-        console.error("Lỗi lấy dữ liệu VN30:", error.message);
+        console.error("Lỗi lấy dữ liệu VN30 từ SSI:", error.message);
         return "• VN30: Không lấy được dữ liệu";
     }
 }
 
-
-// 4. Lấy Lãi suất Ngân hàng Động (Cào tự động kỳ hạn 12 tháng từ API dữ liệu mở)
+// 4. Lãi suất tiết kiệm động 12 tháng
 async function getBankRates() {
     try {
         const res = await fetch('https://api.webtygia.com/api/bank-rates', { headers });
@@ -143,7 +138,6 @@ async function getBankRates() {
                    `• *ACB (12T):* ${acb}`;
         }
     } catch (error) {
-        // Dự phòng trong trường hợp nguồn cào bị quá tải
         return `• *Vietcombank (12T):* ~7.2%/năm\n` +
                `• *MB Bank (12T):* ~7.4%/năm\n` +
                `• *Techcombank (12T):* ~7.3%/năm\n` +
@@ -153,7 +147,7 @@ async function getBankRates() {
 
 // 5. Tổng hợp báo cáo
 async function generateDailyReport() {
-    console.log("Đang tải dữ liệu...");
+    console.log("Đang tổng hợp dữ liệu báo cáo...");
     const [cryptoData, globalMarketData, vn30Data, bankData] = await Promise.all([
         getCryptoData(),
         getGlobalMarketData(),
@@ -170,6 +164,7 @@ async function generateDailyReport() {
     await sendTelegramMessage(vn30Data);
 }
 
+// Đặt lịch gửi lúc 08:00 sáng giờ VN (01:00 UTC)
 cron.schedule('0 1 * * *', () => {
     generateDailyReport();
 });
