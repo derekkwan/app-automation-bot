@@ -88,29 +88,42 @@ async function getGlobalMarketData() {
 
 // 3. Lấy giá VN30 qua Yahoo Finance (không bị chặn IP)
 // Lấy toàn bộ VN30 bằng 1 request Yahoo duy nhất, không lo bị rate-limit
+// Lấy dữ liệu VN30 từ Yahoo Finance v8 Chart API (không bao giờ dính rate-limit/auth)
 async function getVN30Data() {
     try {
         const allTickers = Object.values(VN30_SECTORS).flat();
-        const yahooSymbols = allTickers.map(t => `${t}.HM`).join(',');
-        
-        // Gọi batch request lấy dữ liệu 30 mã cùng lúc
-        const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${yahooSymbols}`;
-        const res = await fetch(url, { headers });
-        const json = await res.json();
-
         const priceMap = {};
-        const resultList = json?.quoteResponse?.result || [];
 
-        resultList.forEach(item => {
-            // Lấy lại mã gốc từ symbol (ví dụ "VCB.HM" -> "VCB")
-            const ticker = item.symbol?.replace('.HM', '');
-            // Ưu tiên giá thị trường -> giá đóng cửa -> giá tham chiếu
-            const price = item.regularMarketPrice || item.regularMarketPreviousClose || item.previousClose;
+        // Chia 30 mã thành các nhóm nhỏ (mỗi nhóm 5 mã) để gửi request nối tiếp
+        const chunkSize = 5;
+        for (let i = 0; i < allTickers.length; i += chunkSize) {
+            const chunk = allTickers.slice(i, i + chunkSize);
             
-            if (ticker && price) {
-                priceMap[ticker] = (parseFloat(price) * 1000).toLocaleString('vi-VN') + 'đ';
-            }
-        });
+            await Promise.all(chunk.map(async (ticker) => {
+                try {
+                    const yahooSymbol = `${ticker}.HM`;
+                    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
+                    const res = await fetch(url, { headers });
+                    
+                    if (res.ok) {
+                        const data = await res.json();
+                        const meta = data?.chart?.result?.[0]?.meta;
+                        const rawPrice = meta?.regularMarketPrice || meta?.chartPreviousClose;
+                        
+                        if (rawPrice) {
+                            // Xử lý giá: Yahoo trả về đúng mệnh giá VNĐ (hoặc nghìn đồng tùy phiên)
+                            const priceVal = rawPrice < 1000 ? rawPrice * 1000 : rawPrice;
+                            priceMap[ticker] = parseFloat(priceVal).toLocaleString('vi-VN') + 'đ';
+                        }
+                    }
+                } catch (e) {
+                    priceMap[ticker] = 'N/A';
+                }
+            }));
+            
+            // Nghỉ 100ms giữa mỗi lượt để tránh nghẽn băng thông Render
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
 
         let output = "🇻🇳 *CỔ PHIẾU VN30 THEO NGÀNH*\n";
         for (const [sector, tickers] of Object.entries(VN30_SECTORS)) {
@@ -127,6 +140,7 @@ async function getVN30Data() {
         return "• VN30: Không lấy được dữ liệu";
     }
 }
+
 
 // 4. Lãi suất tiết kiệm động 12 tháng
 async function getBankRates() {
