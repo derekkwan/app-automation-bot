@@ -6,9 +6,13 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Lấy Token và Chat ID từ biến môi trường (Environment Variables)
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// Tắt cảnh báo từ thư viện Yahoo Finance
+if (yahooFinance && yahooFinance.suppressNotices) {
+    yahooFinance.suppressNotices(['yahooSurvey']);
+}
 
 // Hàm gửi tin nhắn qua Telegram
 async function sendTelegramMessage(message) {
@@ -29,41 +33,44 @@ async function sendTelegramMessage(message) {
     }
 }
 
-// 1. Lấy giá Crypto
+// 1. Lấy giá Crypto từ Binance API (Ổn định 100% trên Cloud)
 async function getCryptoData() {
     try {
-        const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd';
-        const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        const btc = response.data?.bitcoin?.usd || 'N/A';
-        const eth = response.data?.ethereum?.usd || 'N/A';
+        const [btcRes, ethRes] = await Promise.all([
+            axios.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
+            axios.get('https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT')
+        ]);
+        
+        const btc = parseFloat(btcRes.data.price).toLocaleString('en-US', { maximumFractionDigits: 2 });
+        const eth = parseFloat(ethRes.data.price).toLocaleString('en-US', { maximumFractionDigits: 2 });
+        
         return `• *Bitcoin:* $${btc}\n• *Ethereum:* $${eth}`;
     } catch (error) {
-        return "• Crypto: Không lấy được dữ liệu";
+        return "• Crypto: Lỗi kết nối API";
     }
 }
 
-// 2. Lấy dữ liệu thị trường
+// 2. Lấy dữ liệu thị trường từ Yahoo Finance
 async function getMarketData() {
-    try {
-        const fetchQuote = async (symbol) => {
-            try {
-                const res = await yahooFinance.quote(symbol);
-                return res?.regularMarketPrice ? `$${res.regularMarketPrice}` : 'N/A';
-            } catch (err) {
-                return 'N/A';
+    const fetchQuote = async (symbol) => {
+        try {
+            const res = await yahooFinance.quote(symbol);
+            if (res && res.regularMarketPrice) {
+                return `$${res.regularMarketPrice.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
             }
-        };
+            return 'N/A';
+        } catch (err) {
+            return 'N/A';
+        }
+    };
 
-        const [apple, gold, oil] = await Promise.all([
-            fetchQuote('AAPL'),
-            fetchQuote('GC=F'),
-            fetchQuote('CL=F')
-        ]);
+    const [apple, gold, oil] = await Promise.all([
+        fetchQuote('AAPL'),
+        fetchQuote('GC=F'),
+        fetchQuote('CL=F')
+    ]);
 
-        return `• *Cổ phiếu Apple:* ${apple}\n• *Vàng:* ${gold}/oz\n• *Dầu WTI:* ${oil}/thùng`;
-    } catch (error) {
-        return "• Thị trường: Không lấy được dữ liệu";
-    }
+    return `• *Cổ phiếu Apple:* ${apple}\n• *Vàng:* ${gold}/oz\n• *Dầu WTI:* ${oil}/thùng`;
 }
 
 // 3. Tổng hợp và gửi Báo cáo
@@ -79,14 +86,11 @@ async function generateDailyReport() {
                    `🪙 *Tiền mã hóa:*\n${cryptoData}\n\n` +
                    `📈 *Thị trường truyền thống:*\n${marketData}`;
 
-    // In ra console log
     console.log(report);
-    
-    // Gửi trực tiếp về Telegram
     await sendTelegramMessage(report);
 }
 
-// Đặt lịch gửi tự động lúc 08:00 sáng mỗi ngày
+// Đặt lịch gửi tự động 08:00 sáng mỗi ngày
 cron.schedule('0 8 * * *', () => {
     generateDailyReport();
 });
@@ -99,5 +103,5 @@ app.listen(PORT, () => {
     console.log(`Server đang chạy trên port ${PORT}`);
 });
 
-// Chạy thử ngay 1 lần khi khởi động để test Telegram
+// Chạy test ngay 1 lần khi khởi động
 generateDailyReport();
