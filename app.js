@@ -29,21 +29,31 @@ async function sendTelegramMessage(message) {
     }
 }
 
-// 1. Lấy giá Crypto từ Coinbase
+// 1. Lấy giá Crypto đầy đủ (BTC, ETH, BNB, SOL, XRP, ADA) từ Coinbase
 async function getCryptoData() {
     try {
-        const [btcRes, ethRes] = await Promise.all([
-            fetch('https://api.coinbase.com/v2/prices/BTC-USD/spot', { headers }),
-            fetch('https://api.coinbase.com/v2/prices/ETH-USD/spot', { headers })
-        ]);
-        
-        const btcData = await btcRes.json();
-        const ethData = await ethRes.json();
+        const coins = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA'];
+        const requests = coins.map(coin => 
+            fetch(`https://api.coinbase.com/v2/prices/${coin}-USD/spot`, { headers })
+                .then(res => res.json())
+                .then(data => {
+                    const amount = parseFloat(data?.data?.amount);
+                    const formatted = amount ? `$${amount.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : 'N/A';
+                    return { coin, price: formatted };
+                })
+                .catch(() => ({ coin, price: 'N/A' }))
+        );
 
-        const btc = parseFloat(btcData?.data?.amount).toLocaleString('en-US', { maximumFractionDigits: 2 });
-        const eth = parseFloat(ethData?.data?.amount).toLocaleString('en-US', { maximumFractionDigits: 2 });
-        
-        return `• *Bitcoin:* $${btc}\n• *Ethereum:* $${eth}`;
+        const results = await Promise.all(requests);
+        const prices = {};
+        results.forEach(item => { prices[item.coin] = item.price; });
+
+        return `• *Bitcoin:* ${prices.BTC}\n` +
+               `• *Ethereum:* ${prices.ETH}\n` +
+               `• *BNB:* ${prices.BNB}\n` +
+               `• *Solana:* ${prices.SOL}\n` +
+               `• *XRP:* ${prices.XRP}\n` +
+               `• *Cardano (ADA):* ${prices.ADA}`;
     } catch (error) {
         return "• Crypto: Không lấy được dữ liệu";
     }
@@ -101,7 +111,7 @@ async function getBankRates() {
 
 // 4. Tổng hợp và gửi báo cáo
 async function generateDailyReport() {
-    console.log("Đang tổng hợp dữ liệu báo cáo thử nghiệm...");
+    console.log("Đang tổng hợp dữ liệu báo cáo...");
     const [cryptoData, globalMarketData, bankData] = await Promise.all([
         getCryptoData(),
         getGlobalMarketData(),
@@ -118,18 +128,18 @@ async function generateDailyReport() {
     await sendTelegramMessage(overviewReport);
 }
 
-// ĐẶT LỊCH GỬI MỖI 10 PHÚT 1 LẦN DÙNG ĐỂ TEST
+// Lịch gửi 10 phút/lần
 cron.schedule('*/10 * * * *', () => {
     generateDailyReport();
 });
 
 app.get('/', (req, res) => {
-    res.send('Bot Tài chính AI đang hoạt động (Chế độ test 10 phút/lần)!');
+    res.send('Bot Tài chính AI đang hoạt động (Test 10 phút/lần)!');
 });
 
 app.listen(PORT, () => {
     console.log(`Server chạy trên port ${PORT}`);
 });
 
-// Gửi ngay 1 tin nhắn khởi động
+// Chạy test lập tức khi start
 generateDailyReport();
