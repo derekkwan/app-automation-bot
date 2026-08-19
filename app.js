@@ -12,18 +12,6 @@ const headers = {
     'Accept': 'application/json'
 };
 
-// Danh sách các mã VN30 phân theo ngành
-const VN30_SECTORS = {
-    "🏦 Ngân hàng": ["ACB", "BID", "CTG", "HDB", "MBB", "SSB", "STB", "TCB", "TPB", "VCB", "VIB", "VPB"],
-    "🏢 Bất động sản": ["BCM", "VHM", "VIC", "VRE"],
-    "🥩 Tiêu dùng & Bán lẻ": ["MSN", "MWG", "SAB", "VNM"],
-    "🧱 Công nghiệp & Vật liệu": ["BVH", "HPG", "GVR"],
-    "⚡ Năng lượng & Tiện ích": ["GAS", "POW", "PLX"],
-    "💻 Công nghệ": ["FPT"],
-    "✈️ Hàng không": ["VJC"],
-    "📈 Chứng khoán": ["SSI"]
-};
-
 async function sendTelegramMessage(message) {
     if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
     try {
@@ -86,63 +74,7 @@ async function getGlobalMarketData() {
            `• *Dầu WTI:* ${oil}/thùng`;
 }
 
-// 3. Lấy giá VN30 qua Yahoo Finance (không bị chặn IP)
-// Lấy toàn bộ VN30 bằng 1 request Yahoo duy nhất, không lo bị rate-limit
-// Lấy dữ liệu VN30 từ Yahoo Finance v8 Chart API (không bao giờ dính rate-limit/auth)
-async function getVN30Data() {
-    try {
-        const allTickers = Object.values(VN30_SECTORS).flat();
-        const priceMap = {};
-
-        // Chia 30 mã thành các nhóm nhỏ (mỗi nhóm 5 mã) để gửi request nối tiếp
-        const chunkSize = 5;
-        for (let i = 0; i < allTickers.length; i += chunkSize) {
-            const chunk = allTickers.slice(i, i + chunkSize);
-            
-            await Promise.all(chunk.map(async (ticker) => {
-                try {
-                    const yahooSymbol = `${ticker}.HM`;
-                    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
-                    const res = await fetch(url, { headers });
-                    
-                    if (res.ok) {
-                        const data = await res.json();
-                        const meta = data?.chart?.result?.[0]?.meta;
-                        const rawPrice = meta?.regularMarketPrice || meta?.chartPreviousClose;
-                        
-                        if (rawPrice) {
-                            // Xử lý giá: Yahoo trả về đúng mệnh giá VNĐ (hoặc nghìn đồng tùy phiên)
-                            const priceVal = rawPrice < 1000 ? rawPrice * 1000 : rawPrice;
-                            priceMap[ticker] = parseFloat(priceVal).toLocaleString('vi-VN') + 'đ';
-                        }
-                    }
-                } catch (e) {
-                    priceMap[ticker] = 'N/A';
-                }
-            }));
-            
-            // Nghỉ 100ms giữa mỗi lượt để tránh nghẽn băng thông Render
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-
-        let output = "🇻🇳 *CỔ PHIẾU VN30 THEO NGÀNH*\n";
-        for (const [sector, tickers] of Object.entries(VN30_SECTORS)) {
-            output += `\n*${sector}:*\n`;
-            tickers.forEach(ticker => {
-                const price = priceMap[ticker] || 'N/A';
-                output += `  • ${ticker}: ${price}\n`;
-            });
-        }
-
-        return output;
-    } catch (error) {
-        console.error("Lỗi lấy dữ liệu VN30:", error.message);
-        return "• VN30: Không lấy được dữ liệu";
-    }
-}
-
-
-// 4. Lãi suất tiết kiệm động 12 tháng
+// 3. Lãi suất tiết kiệm động 12 tháng
 async function getBankRates() {
     try {
         const res = await fetch('https://api.webtygia.com/api/bank-rates', { headers });
@@ -167,36 +99,37 @@ async function getBankRates() {
     }
 }
 
-// 5. Tổng hợp báo cáo
+// 4. Tổng hợp và gửi báo cáo
 async function generateDailyReport() {
-    console.log("Đang tổng hợp dữ liệu báo cáo...");
-    const [cryptoData, globalMarketData, vn30Data, bankData] = await Promise.all([
+    console.log("Đang tổng hợp dữ liệu báo cáo thử nghiệm...");
+    const [cryptoData, globalMarketData, bankData] = await Promise.all([
         getCryptoData(),
         getGlobalMarketData(),
-        getVN30Data(),
         getBankRates()
     ]);
 
-    const overviewReport = `📊 *BÁO CÁO TÀI CHÍNH MỖI NGÀY*\n\n` +
+    const now = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+
+    const overviewReport = `📊 *BÁO CÁO TÀI CHÍNH (TEST 10 PHÚT - ${now})*\n\n` +
                             `🪙 *Tiền mã hóa:*\n${cryptoData}\n\n` +
                             `📈 *Thị trường quốc tế:*\n${globalMarketData}\n\n` +
                             `🏦 *Lãi suất tiết kiệm động (12 tháng):*\n${bankData}`;
     
     await sendTelegramMessage(overviewReport);
-    await sendTelegramMessage(vn30Data);
 }
 
-// Đặt lịch gửi lúc 08:00 sáng giờ VN (01:00 UTC)
-cron.schedule('0 1 * * *', () => {
+// ĐẶT LỊCH GỬI MỖI 10 PHÚT 1 LẦN DÙNG ĐỂ TEST
+cron.schedule('*/10 * * * *', () => {
     generateDailyReport();
 });
 
 app.get('/', (req, res) => {
-    res.send('Bot Tài chính AI đang hoạt động 24/7!');
+    res.send('Bot Tài chính AI đang hoạt động (Chế độ test 10 phút/lần)!');
 });
 
 app.listen(PORT, () => {
     console.log(`Server chạy trên port ${PORT}`);
 });
 
+// Gửi ngay 1 tin nhắn khởi động
 generateDailyReport();
