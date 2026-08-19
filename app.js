@@ -30,19 +30,29 @@ async function sendTelegramMessage(message) {
 }
 
 // 1. Lấy giá Crypto từ CryptoCompare (Chuyên dùng cho Server Cloud)
+// Lấy giá Crypto chuẩn từ Coinbase API
 async function getCryptoData() {
     try {
-        const res = await fetch('https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH&tsyms=USD', { headers });
-        const data = await res.json();
+        const [btcRes, ethRes] = await Promise.all([
+            fetch('https://api.coinbase.com/v2/prices/BTC-USD/spot', { headers }),
+            fetch('https://api.coinbase.com/v2/prices/ETH-USD/spot', { headers })
+        ]);
         
-        const btc = data?.BTC?.USD ? `$${data.BTC.USD.toLocaleString('en-US')}` : 'N/A';
-        const eth = data?.ETH?.USD ? `$${data.ETH.USD.toLocaleString('en-US')}` : 'N/A';
+        const btcData = await btcRes.json();
+        const ethData = await ethRes.json();
+
+        const btcPrice = parseFloat(btcData?.data?.amount);
+        const ethPrice = parseFloat(ethData?.data?.amount);
+
+        const btc = btcPrice ? `$${btcPrice.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : 'N/A';
+        const eth = ethPrice ? `$${ethPrice.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : 'N/A';
         
         return `• *Bitcoin:* ${btc}\n• *Ethereum:* ${eth}`;
     } catch (error) {
         return "• Crypto: Không lấy được dữ liệu";
     }
 }
+
 
 // 2. Lấy giá Thị trường từ Yahoo Finance v8 Chart API
 async function fetchYahooPrice(symbol) {
