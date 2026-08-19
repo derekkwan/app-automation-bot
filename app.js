@@ -1,21 +1,26 @@
 const axios = require('axios');
 const yahooFinance = require('yahoo-finance2').default;
 const cron = require('node-cron');
-const express = require('express'); // THÊM THƯ VIỆN NÀY
+const express = require('express');
 
 const app = express();
-// Lấy port tự động từ đám mây, hoặc dùng 3000 nếu chạy ở máy tính
 const PORT = process.env.PORT || 3000; 
 
-// 1. Hàm lấy giá Tiền ảo từ CoinGecko (Miễn phí, không cần API Key)
+// Tắt các cảnh báo không cần thiết của Yahoo Finance
+try {
+    yahooFinance.suppressNotices(['yahooSurvey']);
+} catch (e) {
+    // Bỏ qua nếu phiên bản không hỗ trợ
+}
+
+// 1. Hàm lấy giá Crypto từ CoinGecko
 async function getCryptoData() {
     try {
-        // Lấy giá Bitcoin và Ethereum theo USD
         const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd';
-        const response = await axios.get(url);
+        const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
         
-        const btc = response.data.bitcoin.usd;
-        const eth = response.data.ethereum.usd;
+        const btc = response.data?.bitcoin?.usd || 'N/A';
+        const eth = response.data?.ethereum?.usd || 'N/A';
         
         return `Bitcoin: $${btc}, Ethereum: $${eth}`;
     } catch (error) {
@@ -24,58 +29,63 @@ async function getCryptoData() {
     }
 }
 
-// 2. Hàm lấy giá Cổ phiếu, Vàng, Dầu từ Yahoo Finance
+// 2. Hàm lấy dữ liệu từ Yahoo Finance (Có bọc lỗi riêng từng mã)
 async function getMarketData() {
     try {
-        // Các mã ticker chuẩn: AAPL (Apple), GC=F (Vàng hợp đồng tương lai), CL=F (Dầu thô WTI)
-        const apple = await yahooFinance.quote('AAPL');
-        const gold = await yahooFinance.quote('GC=F');
-        const oil = await yahooFinance.quote('CL=F');
+        const fetchQuote = async (symbol) => {
+            try {
+                const res = await yahooFinance.quote(symbol);
+                return res?.regularMarketPrice || 'N/A';
+            } catch (err) {
+                console.error(`Lỗi lấy mã ${symbol}:`, err.message);
+                return 'N/A';
+            }
+        };
 
-        return `Apple: $${apple.regularMarketPrice}, Vàng: $${gold.regularMarketPrice}/oz, Dầu: $${oil.regularMarketPrice}/thùng`;
+        const [applePrice, goldPrice, oilPrice] = await Promise.all([
+            fetchQuote('AAPL'),
+            fetchQuote('GC=F'),
+            fetchQuote('CL=F')
+        ]);
+
+        return `Apple: $${applePrice}, Vàng: $${goldPrice}/oz, Dầu: $${oilPrice}/thùng`;
     } catch (error) {
         console.error("Lỗi lấy dữ liệu thị trường:", error.message);
         return "Không lấy được dữ liệu thị trường";
     }
 }
 
-// 3. Hàm tổng hợp và kịch bản tự động hóa
+// 3. Báo cáo tổng hợp
 async function generateDailyReport() {
     console.log("Đang tổng hợp dữ liệu thị trường...");
     
-    // Gọi song song các hàm để tiết kiệm thời gian
     const [cryptoData, marketData] = await Promise.all([
         getCryptoData(),
         getMarketData()
     ]);
 
-    // Gộp thành một khối dữ liệu thô
     const rawData = `Dữ liệu hôm nay:\n- Tiền ảo: ${cryptoData}\n- Thị trường: ${marketData}`;
     
     console.log("-----------------------");
     console.log(rawData);
     console.log("-----------------------");
-    
-    // Ở bước tiếp theo, biến 'rawData' này sẽ được gửi vào AI API để phân tích và nhắn qua Telegram
 }
 
-
+// Lịch chạy 8:00 AM mỗi ngày
 cron.schedule('0 8 * * *', () => {
     generateDailyReport();
 });
 
-// Tạo một đường dẫn web để máy chủ đám mây kiểm tra bot có còn sống không
+// Endpoint kiểm tra Uptime cho Render / Cron-job.org
 app.get('/', (req, res) => {
     res.send('Bot Tài chính AI đang hoạt động 24/7!');
 });
 
-// Lệnh khởi động server
 app.listen(PORT, () => {
     console.log(`Server đang chạy ổn định trên port ${PORT}`);
-    // generateDailyReport(); // (Có thể bỏ dòng này đi để nó không báo cáo ngay lúc mới bật)
 });
 
 console.log("Hệ thống dữ liệu đã khởi động. Đang chờ đến lịch...");
 
-// Chạy thử một lần ngay khi khởi động để kiểm tra code
+// Chạy test 1 lần ngay khi khởi động
 generateDailyReport();
