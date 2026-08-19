@@ -86,26 +86,29 @@ async function getGlobalMarketData() {
            `• *Dầu WTI:* ${oil}/thùng`;
 }
 
-// 3. Lấy giá VN30 từ VNDirect API v2 (1 request cực nhanh và không bị chặn IP)
+// 3. Lấy giá VN30 qua Yahoo Finance (không bị chặn IP)
 async function getVN30Data() {
     try {
-        const allTickers = Object.values(VN30_SECTORS).flat().join(',');
-        const url = `https://api-price.vndirect.com.vn/v2/stock/multi?q=code:${allTickers}`;
-        
-        const res = await fetch(url, { headers });
-        const json = await res.json();
-
         const priceMap = {};
-        if (json && json.data && Array.isArray(json.data)) {
-            json.data.forEach(item => {
-                const ticker = item.code;
-                // Lấy giá khớp gần nhất -> nếu không có thì lấy giá tham chiếu/đóng cửa
-                const price = item.matchPrice || item.closePrice || item.basicPrice;
-                if (ticker && price) {
-                    priceMap[ticker] = (parseFloat(price) * 1000).toLocaleString('vi-VN') + 'đ';
+        const allTickers = Object.values(VN30_SECTORS).flat();
+
+        await Promise.all(allTickers.map(async (ticker) => {
+            try {
+                const yahooSymbol = `${ticker}.HM`;
+                const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
+                const res = await fetch(url, { headers });
+                const data = await res.json();
+                
+                const rawPrice = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+                if (rawPrice) {
+                    priceMap[ticker] = (rawPrice * 1000).toLocaleString('vi-VN') + 'đ';
+                } else {
+                    priceMap[ticker] = 'N/A';
                 }
-            });
-        }
+            } catch (err) {
+                priceMap[ticker] = 'N/A';
+            }
+        }));
 
         let output = "🇻🇳 *CỔ PHIẾU VN30 THEO NGÀNH*\n";
         for (const [sector, tickers] of Object.entries(VN30_SECTORS)) {
