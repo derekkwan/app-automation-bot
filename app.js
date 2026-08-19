@@ -7,7 +7,11 @@ const PORT = process.env.PORT || 3000;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Gửi tin nhắn Telegram
+// Header giả lập trình duyệt bắt buộc để tránh bị chặn IP trên Render
+const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+};
+
 async function sendTelegramMessage(message) {
     if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
     try {
@@ -25,32 +29,28 @@ async function sendTelegramMessage(message) {
     }
 }
 
-// 1. Lấy giá Crypto từ CoinCap API
+// 1. Lấy giá Crypto từ CryptoCompare (Chuyên dùng cho Server Cloud)
 async function getCryptoData() {
     try {
-        const [btcRes, ethRes] = await Promise.all([
-            fetch('https://api.coincap.io/v2/assets/bitcoin'),
-            fetch('https://api.coincap.io/v2/assets/ethereum')
-        ]);
+        const res = await fetch('https://min-api.cryptocompare.com/data/pricemulti?fsyms=BTC,ETH&tsyms=USD', { headers });
+        const data = await res.json();
         
-        const btcJson = await btcRes.json();
-        const ethJson = await ethRes.json();
-
-        const btc = parseFloat(btcJson.data.priceUsd).toLocaleString('en-US', { maximumFractionDigits: 2 });
-        const eth = parseFloat(ethJson.data.priceUsd).toLocaleString('en-US', { maximumFractionDigits: 2 });
+        const btc = data?.BTC?.USD ? `$${data.BTC.USD.toLocaleString('en-US')}` : 'N/A';
+        const eth = data?.ETH?.USD ? `$${data.ETH.USD.toLocaleString('en-US')}` : 'N/A';
         
-        return `• *Bitcoin:* $${btc}\n• *Ethereum:* $${eth}`;
+        return `• *Bitcoin:* ${btc}\n• *Ethereum:* ${eth}`;
     } catch (error) {
         return "• Crypto: Không lấy được dữ liệu";
     }
 }
 
-// 2. Lấy giá Thị trường từ Stooq API
-async function fetchStooqPrice(symbol) {
+// 2. Lấy giá Thị trường từ Yahoo Finance v8 Chart API
+async function fetchYahooPrice(symbol) {
     try {
-        const res = await fetch(`https://stooq.com/q/l/?s=${symbol}&f=sd2t2ohlcv&h&e=json`);
-        const json = await res.json();
-        const price = json?.symbols?.[0]?.close;
+        const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d`;
+        const res = await fetch(url, { headers });
+        const data = await res.json();
+        const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
         return price ? `$${parseFloat(price).toLocaleString('en-US', { maximumFractionDigits: 2 })}` : 'N/A';
     } catch (err) {
         return 'N/A';
@@ -59,9 +59,9 @@ async function fetchStooqPrice(symbol) {
 
 async function getMarketData() {
     const [apple, gold, oil] = await Promise.all([
-        fetchStooqPrice('aapl.us'),
-        fetchStooqPrice('xauusd'),
-        fetchStooqPrice('cl.f')
+        fetchYahooPrice('AAPL'),
+        fetchYahooPrice('GC=F'),
+        fetchYahooPrice('CL=F')
     ]);
 
     return `• *Cổ phiếu Apple:* ${apple}\n• *Vàng:* ${gold}/oz\n• *Dầu WTI:* ${oil}/thùng`;
@@ -82,7 +82,6 @@ async function generateDailyReport() {
     await sendTelegramMessage(report);
 }
 
-// Lên lịch chạy lúc 8 giờ sáng mỗi ngày
 cron.schedule('0 8 * * *', () => {
     generateDailyReport();
 });
@@ -95,5 +94,4 @@ app.listen(PORT, () => {
     console.log(`Server chạy trên port ${PORT}`);
 });
 
-// Chạy thử ngay lập tức khi khởi động
 generateDailyReport();
