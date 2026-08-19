@@ -1,6 +1,11 @@
 const axios = require('axios');
 const yahooFinance = require('yahoo-finance2').default;
 const cron = require('node-cron');
+const express = require('express'); // THÊM THƯ VIỆN NÀY
+
+const app = express();
+// Lấy port tự động từ đám mây, hoặc dùng 3000 nếu chạy ở máy tính
+const PORT = process.env.PORT || 3000; 
 
 // 1. Hàm lấy giá Tiền ảo từ CoinGecko (Miễn phí, không cần API Key)
 async function getCryptoData() {
@@ -54,11 +59,20 @@ async function generateDailyReport() {
     // Ở bước tiếp theo, biến 'rawData' này sẽ được gửi vào AI API để phân tích và nhắn qua Telegram
 }
 
-// Lên lịch chạy tự động bằng node-cron
-// Cú pháp '* * * * *' tương ứng với: Phút, Giờ, Ngày trong tháng, Tháng, Ngày trong tuần
-// Ví dụ dưới đây: Chạy vào đúng 08:00 sáng mỗi ngày
+
 cron.schedule('0 8 * * *', () => {
     generateDailyReport();
+});
+
+// Tạo một đường dẫn web để máy chủ đám mây kiểm tra bot có còn sống không
+app.get('/', (req, res) => {
+    res.send('Bot Tài chính AI đang hoạt động 24/7!');
+});
+
+// Lệnh khởi động server
+app.listen(PORT, () => {
+    console.log(`Server đang chạy ổn định trên port ${PORT}`);
+    // generateDailyReport(); // (Có thể bỏ dòng này đi để nó không báo cáo ngay lúc mới bật)
 });
 
 console.log("Hệ thống dữ liệu đã khởi động. Đang chờ đến lịch...");
