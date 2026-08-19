@@ -1,5 +1,4 @@
 const axios = require('axios');
-const yahooFinance = require('yahoo-finance2').default;
 const cron = require('node-cron');
 const express = require('express');
 
@@ -9,17 +8,13 @@ const PORT = process.env.PORT || 3000;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Tắt cảnh báo từ thư viện Yahoo Finance
-if (yahooFinance && yahooFinance.suppressNotices) {
-    yahooFinance.suppressNotices(['yahooSurvey']);
-}
+// Header giả lập trình duyệt
+const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+};
 
-// Hàm gửi tin nhắn qua Telegram
 async function sendTelegramMessage(message) {
-    if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.log("Thiếu TELEGRAM_TOKEN hoặc TELEGRAM_CHAT_ID!");
-        return;
-    }
+    if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
     try {
         const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
         await axios.post(url, {
@@ -27,56 +22,52 @@ async function sendTelegramMessage(message) {
             text: message,
             parse_mode: 'Markdown'
         });
-        console.log("Đã gửi báo cáo qua Telegram thành công!");
     } catch (error) {
         console.error("Lỗi gửi Telegram:", error.message);
     }
 }
 
-// 1. Lấy giá Crypto từ Binance API (Ổn định 100% trên Cloud)
+// 1. Lấy Crypto qua CoinCap (Rất uy tín, không block Cloud)
 async function getCryptoData() {
     try {
         const [btcRes, ethRes] = await Promise.all([
-            axios.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
-            axios.get('https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT')
+            axios.get('https://api.coincap.io/v2/assets/bitcoin', { headers }),
+            axios.get('https://api.coincap.io/v2/assets/ethereum', { headers })
         ]);
         
-        const btc = parseFloat(btcRes.data.price).toLocaleString('en-US', { maximumFractionDigits: 2 });
-        const eth = parseFloat(ethRes.data.price).toLocaleString('en-US', { maximumFractionDigits: 2 });
+        const btc = parseFloat(btcRes.data.data.priceUsd).toLocaleString('en-US', { maximumFractionDigits: 2 });
+        const eth = parseFloat(ethRes.data.data.priceUsd).toLocaleString('en-US', { maximumFractionDigits: 2 });
         
         return `• *Bitcoin:* $${btc}\n• *Ethereum:* $${eth}`;
     } catch (error) {
-        return "• Crypto: Lỗi kết nối API";
+        return "• Crypto: Không lấy được dữ liệu";
     }
 }
 
-// 2. Lấy dữ liệu thị trường từ Yahoo Finance
-async function getMarketData() {
-    const fetchQuote = async (symbol) => {
-        try {
-            const res = await yahooFinance.quote(symbol);
-            if (res && res.regularMarketPrice) {
-                return `$${res.regularMarketPrice.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
-            }
-            return 'N/A';
-        } catch (err) {
-            return 'N/A';
-        }
-    };
+// 2. Lấy giá Thị trường qua Stooq API (Dạng JSON miễn phí, hoạt động 100% trên Render)
+async function fetchStooqPrice(symbol) {
+    try {
+        const url = `https://stooq.com/q/l/?s=${symbol}&f=sd2t2ohlcv&h&e=json`;
+        const res = await axios.get(url, { headers });
+        const price = res.data?.symbols?.[0]?.close;
+        return price ? `$${parseFloat(price).toLocaleString('en-US', { maximumFractionDigits: 2 })}` : 'N/A';
+    } catch (err) {
+        return 'N/A';
+    }
+}
 
+async function getMarketData() {
     const [apple, gold, oil] = await Promise.all([
-        fetchQuote('AAPL'),
-        fetchQuote('GC=F'),
-        fetchQuote('CL=F')
+        fetchStooqPrice('aapl.us'), // Apple
+        fetchStooqPrice('xauusd'),  // Vàng
+        fetchStooqPrice('cl.f')     // Dầu WTI
     ]);
 
     return `• *Cổ phiếu Apple:* ${apple}\n• *Vàng:* ${gold}/oz\n• *Dầu WTI:* ${oil}/thùng`;
 }
 
-// 3. Tổng hợp và gửi Báo cáo
+// 3. Tổng hợp báo cáo
 async function generateDailyReport() {
-    console.log("Đang tổng hợp dữ liệu thị trường...");
-    
     const [cryptoData, marketData] = await Promise.all([
         getCryptoData(),
         getMarketData()
@@ -86,11 +77,9 @@ async function generateDailyReport() {
                    `🪙 *Tiền mã hóa:*\n${cryptoData}\n\n` +
                    `📈 *Thị trường truyền thống:*\n${marketData}`;
 
-    console.log(report);
     await sendTelegramMessage(report);
 }
 
-// Đặt lịch gửi tự động 08:00 sáng mỗi ngày
 cron.schedule('0 8 * * *', () => {
     generateDailyReport();
 });
@@ -100,8 +89,7 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Server đang chạy trên port ${PORT}`);
+    console.log(`Server chạy trên port ${PORT}`);
 });
 
-// Chạy test ngay 1 lần khi khởi động
 generateDailyReport();
