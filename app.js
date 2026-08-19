@@ -1,4 +1,3 @@
-const axios = require('axios');
 const cron = require('node-cron');
 const express = require('express');
 
@@ -8,35 +7,37 @@ const PORT = process.env.PORT || 3000;
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Header giả lập trình duyệt
-const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-};
-
+// Gửi tin nhắn Telegram
 async function sendTelegramMessage(message) {
     if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
     try {
-        const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-        await axios.post(url, {
-            chat_id: TELEGRAM_CHAT_ID,
-            text: message,
-            parse_mode: 'Markdown'
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: TELEGRAM_CHAT_ID,
+                text: message,
+                parse_mode: 'Markdown'
+            })
         });
     } catch (error) {
         console.error("Lỗi gửi Telegram:", error.message);
     }
 }
 
-// 1. Lấy Crypto qua CoinCap (Rất uy tín, không block Cloud)
+// 1. Lấy giá Crypto từ CoinCap API
 async function getCryptoData() {
     try {
         const [btcRes, ethRes] = await Promise.all([
-            axios.get('https://api.coincap.io/v2/assets/bitcoin', { headers }),
-            axios.get('https://api.coincap.io/v2/assets/ethereum', { headers })
+            fetch('https://api.coincap.io/v2/assets/bitcoin'),
+            fetch('https://api.coincap.io/v2/assets/ethereum')
         ]);
         
-        const btc = parseFloat(btcRes.data.data.priceUsd).toLocaleString('en-US', { maximumFractionDigits: 2 });
-        const eth = parseFloat(ethRes.data.data.priceUsd).toLocaleString('en-US', { maximumFractionDigits: 2 });
+        const btcJson = await btcRes.json();
+        const ethJson = await ethRes.json();
+
+        const btc = parseFloat(btcJson.data.priceUsd).toLocaleString('en-US', { maximumFractionDigits: 2 });
+        const eth = parseFloat(ethJson.data.priceUsd).toLocaleString('en-US', { maximumFractionDigits: 2 });
         
         return `• *Bitcoin:* $${btc}\n• *Ethereum:* $${eth}`;
     } catch (error) {
@@ -44,12 +45,12 @@ async function getCryptoData() {
     }
 }
 
-// 2. Lấy giá Thị trường qua Stooq API (Dạng JSON miễn phí, hoạt động 100% trên Render)
+// 2. Lấy giá Thị trường từ Stooq API
 async function fetchStooqPrice(symbol) {
     try {
-        const url = `https://stooq.com/q/l/?s=${symbol}&f=sd2t2ohlcv&h&e=json`;
-        const res = await axios.get(url, { headers });
-        const price = res.data?.symbols?.[0]?.close;
+        const res = await fetch(`https://stooq.com/q/l/?s=${symbol}&f=sd2t2ohlcv&h&e=json`);
+        const json = await res.json();
+        const price = json?.symbols?.[0]?.close;
         return price ? `$${parseFloat(price).toLocaleString('en-US', { maximumFractionDigits: 2 })}` : 'N/A';
     } catch (err) {
         return 'N/A';
@@ -58,9 +59,9 @@ async function fetchStooqPrice(symbol) {
 
 async function getMarketData() {
     const [apple, gold, oil] = await Promise.all([
-        fetchStooqPrice('aapl.us'), // Apple
-        fetchStooqPrice('xauusd'),  // Vàng
-        fetchStooqPrice('cl.f')     // Dầu WTI
+        fetchStooqPrice('aapl.us'),
+        fetchStooqPrice('xauusd'),
+        fetchStooqPrice('cl.f')
     ]);
 
     return `• *Cổ phiếu Apple:* ${apple}\n• *Vàng:* ${gold}/oz\n• *Dầu WTI:* ${oil}/thùng`;
@@ -68,6 +69,7 @@ async function getMarketData() {
 
 // 3. Tổng hợp báo cáo
 async function generateDailyReport() {
+    console.log("Đang lấy dữ liệu thị trường...");
     const [cryptoData, marketData] = await Promise.all([
         getCryptoData(),
         getMarketData()
@@ -80,6 +82,7 @@ async function generateDailyReport() {
     await sendTelegramMessage(report);
 }
 
+// Lên lịch chạy lúc 8 giờ sáng mỗi ngày
 cron.schedule('0 8 * * *', () => {
     generateDailyReport();
 });
@@ -92,4 +95,5 @@ app.listen(PORT, () => {
     console.log(`Server chạy trên port ${PORT}`);
 });
 
+// Chạy thử ngay lập tức khi khởi động
 generateDailyReport();
