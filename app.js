@@ -29,31 +29,47 @@ async function sendTelegramMessage(message) {
     }
 }
 
-// 1. Lấy giá Crypto đầy đủ (BTC, ETH, BNB, SOL, XRP, ADA) từ Coinbase
+// 1. Lấy giá Crypto phân nhóm rõ ràng theo Hệ sinh thái
 async function getCryptoData() {
     try {
-        const coins = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA'];
-        const requests = coins.map(coin => 
+        const coinGroups = {
+            "💎 *Hệ Bitcoin & Vàng số:*": ['BTC'],
+            "🔹 *Hệ Ethereum (ETH & L2):*": ['ETH', 'POL', 'ARB', 'OP'],
+            "🟣 *Hệ Solana (SOL Ecosystem):*": ['SOL', 'RAY', 'JUP'],
+            "🟡 *Hệ BNB Chain (Binance):*": ['BNB', 'CAKE'],
+            "🌐 *Layer 1 & Crypto chính khác:*": ['XRP', 'ADA', 'AVAX', 'LINK', 'DOGE']
+        };
+
+        const allCoins = Object.values(coinGroups).flat();
+        
+        const requests = allCoins.map(coin => 
             fetch(`https://api.coinbase.com/v2/prices/${coin}-USD/spot`, { headers })
                 .then(res => res.json())
                 .then(data => {
                     const amount = parseFloat(data?.data?.amount);
-                    const formatted = amount ? `$${amount.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : 'N/A';
+                    let formatted = 'N/A';
+                    if (amount) {
+                        formatted = `$${amount.toLocaleString('en-US', { maximumFractionDigits: amount < 1 ? 4 : 2 })}`;
+                    }
                     return { coin, price: formatted };
                 })
                 .catch(() => ({ coin, price: 'N/A' }))
         );
 
         const results = await Promise.all(requests);
-        const prices = {};
-        results.forEach(item => { prices[item.coin] = item.price; });
+        const priceMap = {};
+        results.forEach(item => { priceMap[item.coin] = item.price; });
 
-        return `• *Bitcoin:* ${prices.BTC}\n` +
-               `• *Ethereum:* ${prices.ETH}\n` +
-               `• *BNB:* ${prices.BNB}\n` +
-               `• *Solana:* ${prices.SOL}\n` +
-               `• *XRP:* ${prices.XRP}\n` +
-               `• *Cardano (ADA):* ${prices.ADA}`;
+        let output = "";
+        for (const [groupName, coins] of Object.entries(coinGroups)) {
+            output += `${groupName}\n`;
+            coins.forEach(coin => {
+                output += `  • *${coin}:* ${priceMap[coin] || 'N/A'}\n`;
+            });
+            output += "\n";
+        }
+
+        return output.trim();
     } catch (error) {
         return "• Crypto: Không lấy được dữ liệu";
     }
@@ -121,7 +137,7 @@ async function generateDailyReport() {
     const now = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
 
     const overviewReport = `📊 *BÁO CÁO TÀI CHÍNH (TEST 10 PHÚT - ${now})*\n\n` +
-                            `🪙 *Tiền mã hóa:*\n${cryptoData}\n\n` +
+                            `🪙 *CÁC HỆ SINH THÁI CRYPTO:*\n${cryptoData}\n\n` +
                             `📈 *Thị trường quốc tế:*\n${globalMarketData}\n\n` +
                             `🏦 *Lãi suất tiết kiệm động (12 tháng):*\n${bankData}`;
     
