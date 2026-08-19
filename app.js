@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const express = require('express');
+const express = require('express'); we
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -87,24 +87,26 @@ async function getGlobalMarketData() {
 }
 
 // 3. Lấy giá VN30 phân ngành từ DNSE Entrade API (Hoạt động tốt trên Cloud)
+// Lấy giá toàn bộ VN30 bằng 1 request duy nhất qua Simplize API
 async function getVN30Data() {
     try {
-        const allTickers = Object.values(VN30_SECTORS).flat();
+        const allTickers = Object.values(VN30_SECTORS).flat().join(',');
+        const url = `https://api.simplize.vn/api/historical/quote/multi-stock?symbols=${allTickers}`;
         
-        // Gọi dữ liệu khớp lệnh từ DNSE API
+        const res = await fetch(url, { headers });
+        const json = await res.json();
+
         const priceMap = {};
-        await Promise.all(allTickers.map(async (ticker) => {
-            try {
-                const res = await fetch(`https://services.entrade.com.vn/chart-api/v2/ticks?symbol=${ticker}&from=0&to=${Math.floor(Date.now()/1000)}`, { headers });
-                const json = await res.json();
-                if (json && json.close && json.close.length > 0) {
-                    const lastPrice = json.close[json.close.length - 1];
-                    priceMap[ticker] = (lastPrice * 1000).toLocaleString('vi-VN') + 'đ';
+        if (json && json.data && Array.isArray(json.data)) {
+            json.data.forEach(item => {
+                const ticker = item.ticker || item.symbol;
+                // Lấy giá đóng cửa hoặc giá hiện tại
+                const price = item.close || item.price || item.lastPrice;
+                if (ticker && price) {
+                    priceMap[ticker] = (parseFloat(price) * 1000).toLocaleString('vi-VN') + 'đ';
                 }
-            } catch (e) {
-                priceMap[ticker] = 'N/A';
-            }
-        }));
+            });
+        }
 
         let output = "🇻🇳 *CỔ PHIẾU VN30 THEO NGÀNH*\n";
         for (const [sector, tickers] of Object.entries(VN30_SECTORS)) {
@@ -117,9 +119,11 @@ async function getVN30Data() {
 
         return output;
     } catch (error) {
+        console.error("Lỗi lấy dữ liệu VN30:", error.message);
         return "• VN30: Không lấy được dữ liệu";
     }
 }
+
 
 // 4. Lấy Lãi suất Ngân hàng Động (Cào tự động kỳ hạn 12 tháng từ API dữ liệu mở)
 async function getBankRates() {
