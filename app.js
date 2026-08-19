@@ -92,9 +92,11 @@ async function generateDailyReport() {
     await sendTelegramMessage(report);
 }
 
-cron.schedule('0 8 * * *', () => {
+// Đặt lịch 01:00 AM UTC -> Đúng 08:00 AM giờ Việt Nam (GMT+7)
+cron.schedule('0 1 * * *', () => {
     generateDailyReport();
 });
+
 
 app.get('/', (req, res) => {
     res.send('Bot Tài chính AI đang hoạt động 24/7!');
