@@ -86,17 +86,24 @@ async function getGlobalMarketData() {
 }
 
 // 3. Lấy giá VN30 phân ngành (TCBS API)
+// Lấy giá VN30 phân ngành từ API VNDirect
 async function getVN30Data() {
     try {
         const vn30Tickers = Object.values(VN30_SECTORS).flat().join(',');
-        const url = `https://apipubks.tcbs.com.vn/stock-insight/v1/stock/second-price?tickers=${vn30Tickers}`;
+        const url = `https://fchart.vndirect.com.vn/dse-quotes/price-depth?code=${vn30Tickers}`;
+        
         const res = await fetch(url, { headers });
         const json = await res.json();
 
+        // Tạo bản đồ lưu giá khớp lệnh (VNDirect trả về giá theo đơn vị đồng)
         const priceMap = {};
-        if (json?.data) {
-            json.data.forEach(item => {
-                priceMap[item.ticker] = item.cp ? (item.cp * 1000).toLocaleString('vi-VN') + 'đ' : 'N/A';
+        if (Array.isArray(json)) {
+            json.forEach(item => {
+                const symbol = item.code || item.symbol;
+                const price = item.matchPrice || item.price || item.basicPrice;
+                if (symbol && price) {
+                    priceMap[symbol] = parseFloat(price).toLocaleString('vi-VN') + 'đ';
+                }
             });
         }
 
@@ -111,9 +118,11 @@ async function getVN30Data() {
 
         return output;
     } catch (error) {
-        return "• VN30: Không lấy được dữ liệu từ TCBS";
+        console.error("Lỗi lấy dữ liệu VN30:", error.message);
+        return "• VN30: Không lấy được dữ liệu";
     }
 }
+
 
 // 4. Lãi suất Ngân hàng (Kỳ hạn 12 tháng)
 function getBankRates() {
