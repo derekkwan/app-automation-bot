@@ -4,58 +4,69 @@ const cron = require('node-cron');
 const express = require('express');
 
 const app = express();
-const PORT = process.env.PORT || 3000; 
+const PORT = process.env.PORT || 3000;
 
-// Tắt các cảnh báo không cần thiết của Yahoo Finance
-try {
-    yahooFinance.suppressNotices(['yahooSurvey']);
-} catch (e) {
-    // Bỏ qua nếu phiên bản không hỗ trợ
+// Lấy Token và Chat ID từ biến môi trường (Environment Variables)
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// Hàm gửi tin nhắn qua Telegram
+async function sendTelegramMessage(message) {
+    if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) {
+        console.log("Thiếu TELEGRAM_TOKEN hoặc TELEGRAM_CHAT_ID!");
+        return;
+    }
+    try {
+        const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+        await axios.post(url, {
+            chat_id: TELEGRAM_CHAT_ID,
+            text: message,
+            parse_mode: 'Markdown'
+        });
+        console.log("Đã gửi báo cáo qua Telegram thành công!");
+    } catch (error) {
+        console.error("Lỗi gửi Telegram:", error.message);
+    }
 }
 
-// 1. Hàm lấy giá Crypto từ CoinGecko
+// 1. Lấy giá Crypto
 async function getCryptoData() {
     try {
         const url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd';
         const response = await axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        
         const btc = response.data?.bitcoin?.usd || 'N/A';
         const eth = response.data?.ethereum?.usd || 'N/A';
-        
-        return `Bitcoin: $${btc}, Ethereum: $${eth}`;
+        return `• *Bitcoin:* $${btc}\n• *Ethereum:* $${eth}`;
     } catch (error) {
-        console.error("Lỗi lấy giá Crypto:", error.message);
-        return "Không lấy được dữ liệu Crypto";
+        return "• Crypto: Không lấy được dữ liệu";
     }
 }
 
-// 2. Hàm lấy dữ liệu từ Yahoo Finance (Có bọc lỗi riêng từng mã)
+// 2. Lấy dữ liệu thị trường
 async function getMarketData() {
     try {
         const fetchQuote = async (symbol) => {
             try {
                 const res = await yahooFinance.quote(symbol);
-                return res?.regularMarketPrice || 'N/A';
+                return res?.regularMarketPrice ? `$${res.regularMarketPrice}` : 'N/A';
             } catch (err) {
-                console.error(`Lỗi lấy mã ${symbol}:`, err.message);
                 return 'N/A';
             }
         };
 
-        const [applePrice, goldPrice, oilPrice] = await Promise.all([
+        const [apple, gold, oil] = await Promise.all([
             fetchQuote('AAPL'),
             fetchQuote('GC=F'),
             fetchQuote('CL=F')
         ]);
 
-        return `Apple: $${applePrice}, Vàng: $${goldPrice}/oz, Dầu: $${oilPrice}/thùng`;
+        return `• *Cổ phiếu Apple:* ${apple}\n• *Vàng:* ${gold}/oz\n• *Dầu WTI:* ${oil}/thùng`;
     } catch (error) {
-        console.error("Lỗi lấy dữ liệu thị trường:", error.message);
-        return "Không lấy được dữ liệu thị trường";
+        return "• Thị trường: Không lấy được dữ liệu";
     }
 }
 
-// 3. Báo cáo tổng hợp
+// 3. Tổng hợp và gửi Báo cáo
 async function generateDailyReport() {
     console.log("Đang tổng hợp dữ liệu thị trường...");
     
@@ -64,28 +75,29 @@ async function generateDailyReport() {
         getMarketData()
     ]);
 
-    const rawData = `Dữ liệu hôm nay:\n- Tiền ảo: ${cryptoData}\n- Thị trường: ${marketData}`;
+    const report = `📊 *BÁO CÁO THỊ TRƯỜNG MỖI NGÀY*\n\n` +
+                   `🪙 *Tiền mã hóa:*\n${cryptoData}\n\n` +
+                   `📈 *Thị trường truyền thống:*\n${marketData}`;
+
+    // In ra console log
+    console.log(report);
     
-    console.log("-----------------------");
-    console.log(rawData);
-    console.log("-----------------------");
+    // Gửi trực tiếp về Telegram
+    await sendTelegramMessage(report);
 }
 
-// Lịch chạy 8:00 AM mỗi ngày
+// Đặt lịch gửi tự động lúc 08:00 sáng mỗi ngày
 cron.schedule('0 8 * * *', () => {
     generateDailyReport();
 });
 
-// Endpoint kiểm tra Uptime cho Render / Cron-job.org
 app.get('/', (req, res) => {
     res.send('Bot Tài chính AI đang hoạt động 24/7!');
 });
 
 app.listen(PORT, () => {
-    console.log(`Server đang chạy ổn định trên port ${PORT}`);
+    console.log(`Server đang chạy trên port ${PORT}`);
 });
 
-console.log("Hệ thống dữ liệu đã khởi động. Đang chờ đến lịch...");
-
-// Chạy test 1 lần ngay khi khởi động
+// Chạy thử ngay 1 lần khi khởi động để test Telegram
 generateDailyReport();
