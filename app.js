@@ -87,28 +87,30 @@ async function getGlobalMarketData() {
 }
 
 // 3. Lấy giá VN30 qua Yahoo Finance (không bị chặn IP)
+// Lấy toàn bộ VN30 bằng 1 request Yahoo duy nhất, không lo bị rate-limit
 async function getVN30Data() {
     try {
-        const priceMap = {};
         const allTickers = Object.values(VN30_SECTORS).flat();
+        const yahooSymbols = allTickers.map(t => `${t}.HM`).join(',');
+        
+        // Gọi batch request lấy dữ liệu 30 mã cùng lúc
+        const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${yahooSymbols}`;
+        const res = await fetch(url, { headers });
+        const json = await res.json();
 
-        await Promise.all(allTickers.map(async (ticker) => {
-            try {
-                const yahooSymbol = `${ticker}.HM`;
-                const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1d`;
-                const res = await fetch(url, { headers });
-                const data = await res.json();
-                
-                const rawPrice = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-                if (rawPrice) {
-                    priceMap[ticker] = (rawPrice * 1000).toLocaleString('vi-VN') + 'đ';
-                } else {
-                    priceMap[ticker] = 'N/A';
-                }
-            } catch (err) {
-                priceMap[ticker] = 'N/A';
+        const priceMap = {};
+        const resultList = json?.quoteResponse?.result || [];
+
+        resultList.forEach(item => {
+            // Lấy lại mã gốc từ symbol (ví dụ "VCB.HM" -> "VCB")
+            const ticker = item.symbol?.replace('.HM', '');
+            // Ưu tiên giá thị trường -> giá đóng cửa -> giá tham chiếu
+            const price = item.regularMarketPrice || item.regularMarketPreviousClose || item.previousClose;
+            
+            if (ticker && price) {
+                priceMap[ticker] = (parseFloat(price) * 1000).toLocaleString('vi-VN') + 'đ';
             }
-        }));
+        });
 
         let output = "🇻🇳 *CỔ PHIẾU VN30 THEO NGÀNH*\n";
         for (const [sector, tickers] of Object.entries(VN30_SECTORS)) {
