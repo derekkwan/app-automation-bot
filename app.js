@@ -1,7 +1,6 @@
 const cron = require('node-cron');
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
+const mongoose = require('mongoose');
 
 const app = express();
 app.use(express.json());
@@ -9,7 +8,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // ==========================================
-// CẤU HÌNH BIẾN MÔI TRƯỜNG (RENDER)
+// CẤU HÌNH BIẾN MÔI TRƯỜNG & KẾT NỐI MONGODB
 // ==========================================
 const BOT1_TOKEN = process.env.TELEGRAM_TOKEN;
 const BOT1_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -17,35 +16,30 @@ const BOT1_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const BOT2_TOKEN = process.env.TELEGRAM_TOKEN_2;
 const BOT2_CHAT_ID = process.env.TELEGRAM_CHAT_ID_2 || BOT1_CHAT_ID;
 
+const MONGODB_URI = process.env.MONGODB_URI;
+
+// Kết nối MongoDB Atlas
+if (MONGODB_URI) {
+    mongoose.connect(MONGODB_URI)
+        .then(() => console.log("✅ Đã kết nối thành công tới MongoDB Atlas"))
+        .catch(err => console.error("❌ Lỗi kết nối MongoDB:", err.message));
+}
+
+// Định nghĩa Schema lưu Ví
+const walletSchema = new mongoose.Schema({
+    group: { type: String, required: true },
+    name: { type: String, required: true, unique: true },
+    address: { type: String, required: true },
+    balance: { type: Number, default: 0 },
+    updatedAt: { type: Date, default: Date.now }
+});
+
+const Wallet = mongoose.model('Wallet', walletSchema);
+
 const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': 'application/json'
 };
-
-// Quản lý file JSON dữ liệu ví (Lưu ở thư mục /tmp an toàn trên Render)
-const DATA_FILE = path.join('/tmp', 'wallets.json');
-
-function loadWallets() {
-    try {
-        if (!fs.existsSync(DATA_FILE)) {
-            fs.writeFileSync(DATA_FILE, JSON.stringify([], null, 2));
-            return [];
-        }
-        const data = fs.readFileSync(DATA_FILE, 'utf8');
-        return JSON.parse(data || '[]');
-    } catch (err) {
-        console.error("Lỗi đọc file wallets.json:", err);
-        return [];
-    }
-}
-
-function saveWallets(wallets) {
-    try {
-        fs.writeFileSync(DATA_FILE, JSON.stringify(wallets, null, 2));
-    } catch (err) {
-        console.error("Lỗi ghi file wallets.json:", err);
-    }
-}
 
 // ==========================================
 // HÀM GỬI TIN NHẮN TELEGRAM
@@ -68,26 +62,23 @@ async function sendTelegramMessage(token, chatId, message) {
 }
 
 // ==========================================
-// API TRA CỨU SỐ DƯ USDT (TRC20 - TRON)
+// API TRA CỨU SỐ DƯ USDT (TRONGRID)
 // ==========================================
 async function getUSDTBalance(address) {
     try {
         if (!address || !address.startsWith('T')) return 0;
 
-        // Dùng API v1 chính thức từ Trongrid
         const url = `https://api.trongrid.io/v1/accounts/${address}`;
         const res = await fetch(url, { headers });
         const data = await res.json();
 
         if (data && data.data && data.data.length > 0) {
             const account = data.data[0];
-            // Tìm token USDT (Địa chỉ hợp đồng TRC20 USDT: TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t)
             const trc20List = account.trc20 || [];
             
             for (const item of trc20List) {
                 if (item['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t']) {
                     const rawBalance = item['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'];
-                    // USDT có 6 chữ số thập phân (decimals = 6)
                     return parseFloat(rawBalance) / 1000000;
                 }
             }
@@ -98,7 +89,6 @@ async function getUSDTBalance(address) {
         return 0;
     }
 }
-
 
 // ==========================================
 // BOT 1: BÁO CÁO TÀI CHÍNH ĐỊNH KỲ (10 PHÚT/LẦN)
@@ -140,24 +130,20 @@ async function getCryptoData() {
     }
 }
 
-async function runBot1Report() {
+cron.schedule('*/10 * * * *', async () => {
     try {
         const cryptoData = await getCryptoData();
         const now = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
         const message = `📊 *BÁO CÁO TÀI CHÍNH BOT 1 (${now})*\n\n🪙 *CÁC HỆ SINH THÁI CRYPTO:*\n${cryptoData}`;
         await sendTelegramMessage(BOT1_TOKEN, BOT1_CHAT_ID, message);
     } catch (e) {
-        console.error("Lỗi chạy Bot 1 report:", e.message);
+        console.error("Lỗi Bot 1:", e.message);
     }
-}
-
-// Lịch chạy Bot 1: 10 phút/lần
-cron.schedule('*/10 * * * *', () => { runBot1Report(); });
+});
 
 // ==========================================
-// BOT 2: TƯƠNG TÁC + THEO DÕI BIẾN ĐỘNG SỐ DƯ VÍ
+// BOT 2: TƯƠNG TÁC + THEO DÕI SỐ DƯ (DATABASE MONGODB)
 // ==========================================
-
 app.post('/telegram-webhook-bot2', async (req, res) => {
     try {
         const message = req.body?.message;
@@ -168,28 +154,26 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
         const parts = text.split(/\s+/);
         const command = parts[0].toLowerCase();
 
-        let wallets = loadWallets();
-
         // 1. Lệnh /add <nhóm> <tên> <địa_chỉ>
         if (command === '/add') {
             if (parts.length < 4) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/add <nhóm> <tên> <địa_chỉ_usdt>`\nVí dụ: `/add my_wallets my_truewallet TBQvH71jzcoYtcqM5zs2YSdaYN9ppNXe26`");
+                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/add <nhóm> <tên> <địa_chỉ_usdt>`");
                 return res.sendStatus(200);
             }
             const group = parts[1];
             const name = parts[2];
             const address = parts[3];
 
-            try {
-                const initialBalance = await getUSDTBalance(address) || 0;
-                wallets.push({ group, name, address, balance: initialBalance, updatedAt: new Date().toISOString() });
-                saveWallets(wallets);
+            const initialBalance = await getUSDTBalance(address);
 
-                await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã thêm ví mới thành công!*\n• *Nhóm:* ${group}\n• *Tên:* ${name}\n• *Địa chỉ:* \`${address}\`\n• *Số dư USDT:* $${initialBalance.toLocaleString('en-US')} USDT`);
-            } catch (err) {
-                console.error("Lỗi khi thêm ví:", err);
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "❌ Đã xảy ra lỗi khi truy vấn số dư hoặc lưu ví.");
-            }
+            // Cập nhật hoặc Thêm mới vào Database
+            await Wallet.findOneAndUpdate(
+                { name: name },
+                { group, name, address, balance: initialBalance, updatedAt: new Date() },
+                { upsert: true, new: true }
+            );
+
+            await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã lưu ví thành công vào Database!*\n• *Nhóm:* ${group}\n• *Tên:* ${name}\n• *Địa chỉ:* \`${address}\`\n• *Số dư USDT:* $${initialBalance.toLocaleString('en-US')} USDT`);
         }
 
         // 2. Lệnh /delete <tên_hoặc_địa_chỉ>
@@ -199,22 +183,23 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
                 return res.sendStatus(200);
             }
             const keyword = parts[1];
-            const newWallets = wallets.filter(w => w.name !== keyword && w.address !== keyword);
-            if (newWallets.length === wallets.length) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, `❌ Không tìm thấy ví nào khớp với từ khóa "${keyword}".`);
+            const deleted = await Wallet.findOneAndDelete({ $or: [{ name: keyword }, { address: keyword }] });
+
+            if (!deleted) {
+                await sendTelegramMessage(BOT2_TOKEN, chatId, `❌ Không tìm thấy ví nào khớp với "${keyword}".`);
             } else {
-                saveWallets(newWallets);
-                await sendTelegramMessage(BOT2_TOKEN, chatId, `🗑️ *Đã xóa thành công ví khớp với:* ${keyword}`);
+                await sendTelegramMessage(BOT2_TOKEN, chatId, `🗑️ *Đã xóa vĩnh viễn ví:* ${deleted.name}`);
             }
         }
 
-        // 3. Lệnh /list (Xem danh sách)
+        // 3. Lệnh /list
         else if (command === '/list') {
+            const wallets = await Wallet.find();
             if (wallets.length === 0) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "📂 Danh sách ví hiện đang trống. Hãy thêm bằng lệnh `/add`.");
+                await sendTelegramMessage(BOT2_TOKEN, chatId, "📂 Chưa có ví nào trong Database. Dùng lệnh `/add` để thêm.");
                 return res.sendStatus(200);
             }
-            let msg = "📂 *DANH SÁCH VÍ USDT ĐANG THEO DÕI*\n\n";
+            let msg = "📂 *DANH SÁCH VÍ USDT TRONG DATABASE*\n\n";
             wallets.forEach((w, index) => {
                 msg += `${index + 1}. *[${w.group}]* ${w.name}\n   • Ví: \`${w.address}\`\n   • Số dư: *$${w.balance.toLocaleString('en-US')} USDT*\n\n`;
             });
@@ -227,21 +212,17 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
                 await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/get <tên / nhóm / địa_chỉ>`");
                 return res.sendStatus(200);
             }
-            const query = parts[1].toLowerCase();
-            const matches = wallets.filter(w => 
-                w.name.toLowerCase().includes(query) || 
-                w.group.toLowerCase().includes(query) || 
-                w.address.toLowerCase() === query
-            );
+            const query = parts[1];
+            const regex = new RegExp(query, 'i');
+            const matches = await Wallet.find({ $or: [{ name: regex }, { group: regex }, { address: query }] });
 
             if (matches.length === 0) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, `❌ Không tìm thấy dữ liệu phù hợp với "${parts[1]}".`);
+                await sendTelegramMessage(BOT2_TOKEN, chatId, `❌ Không tìm thấy dữ liệu khớp với "${query}".`);
             } else {
-                let msg = `🔍 *KẾT QUẢ TRA CỨU:* "${parts[1]}"\n\n`;
+                let msg = `🔍 *KẾT QUẢ TRA CỨU:* "${query}"\n\n`;
                 for (const w of matches) {
                     const liveBalance = await getUSDTBalance(w.address);
-                    const currentBal = liveBalance !== null ? liveBalance : w.balance;
-                    msg += `📌 *${w.name}* (Nhóm: ${w.group})\n• ĐC: \`${w.address}\`\n• Số dư USDT: *$${currentBal.toLocaleString('en-US')} USDT*\n\n`;
+                    msg += `📌 *${w.name}* (Nhóm: ${w.group})\n• ĐC: \`${w.address}\`\n• Số dư Live: *$${liveBalance.toLocaleString('en-US')} USDT*\n\n`;
                 }
                 await sendTelegramMessage(BOT2_TOKEN, chatId, msg);
             }
@@ -249,11 +230,11 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
 
         // Trợ giúp
         else {
-            await sendTelegramMessage(BOT2_TOKEN, chatId, "🤖 *CÁC LỆNH ĐƯỢC HỖ TRỢ BOT 2:*\n\n" +
-                "• `/add <nhóm> <tên> <địa_chỉ>` : Thêm ví\n" +
+            await sendTelegramMessage(BOT2_TOKEN, chatId, "🤖 *CÁC LỆNH BOT 2 (LƯU MONGODB):*\n\n" +
+                "• `/add <nhóm> <tên> <địa_chỉ>` : Thêm/cập nhật ví\n" +
                 "• `/delete <tên_hoặc_địa_chỉ>` : Xóa ví\n" +
-                "• `/list` : Danh sách tất cả ví\n" +
-                "• `/get <tên/nhóm/địa_chỉ>` : Tra cứu chi tiết & số dư live");
+                "• `/list` : Xem toàn bộ ví\n" +
+                "• `/get <tên/nhóm/địa_chỉ>` : Tra cứu số dư live");
         }
     } catch (e) {
         console.error("Lỗi Webhook Bot 2:", e.message);
@@ -263,20 +244,17 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
 });
 
 // ==========================================
-// VÒNG LẶP KIỂM TRA SỐ DƯ (BALANCE WATCHER - 2 PHÚT/LẦN)
+// VÒNG LẶP KIỂM TRA SỐ DƯ (2 PHÚT/LẦN)
 // ==========================================
-async function checkWalletBalances() {
+cron.schedule('*/2 * * * *', async () => {
     try {
-        let wallets = loadWallets();
+        const wallets = await Wallet.find();
         if (wallets.length === 0) return;
 
-        let hasChange = false;
-
-        for (let i = 0; i < wallets.length; i++) {
-            const w = wallets[i];
+        for (const w of wallets) {
             const newBalance = await getUSDTBalance(w.address);
 
-            if (newBalance !== null && newBalance !== w.balance) {
+            if (newBalance !== w.balance) {
                 const diff = newBalance - w.balance;
                 const statusEmoji = diff > 0 ? "🟢 *SỐ DƯ TĂNG*" : "🔴 *SỐ DƯ GIẢM*";
                 const changeStr = diff > 0 ? `+$${diff.toLocaleString('en-US')}` : `-$${Math.abs(diff).toLocaleString('en-US')}`;
@@ -290,27 +268,19 @@ async function checkWalletBalances() {
 
                 await sendTelegramMessage(BOT2_TOKEN, BOT2_CHAT_ID, alertMsg);
 
-                wallets[i].balance = newBalance;
-                wallets[i].updatedAt = new Date().toISOString();
-                hasChange = true;
+                // Cập nhật số dư mới vào DB
+                w.balance = newBalance;
+                w.updatedAt = new Date();
+                await w.save();
             }
         }
-
-        if (hasChange) {
-            saveWallets(wallets);
-        }
     } catch (e) {
-        console.error("Lỗi Balance Watcher:", e.message);
+        console.error("Lỗi Balance Watcher DB:", e.message);
     }
-}
-
-cron.schedule('*/2 * * * *', () => {
-    checkWalletBalances();
 });
 
-// Endpoint Server
 app.get('/', (req, res) => {
-    res.send('Server Đa Bot đang hoạt động an toàn!');
+    res.send('Server Đa Bot (MongoDB) đang hoạt động!');
 });
 
 app.listen(PORT, () => {
