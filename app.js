@@ -155,6 +155,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
         const command = parts[0].toLowerCase();
 
         // 1. Lệnh /add <nhóm> <tên> <địa_chỉ>
+                // 1. Lệnh /add <nhóm> <tên> <địa_chỉ>
         if (command === '/add') {
             if (parts.length < 4) {
                 await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/add <nhóm> <tên> <địa_chỉ_usdt>`");
@@ -164,7 +165,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
             const name = parts[2];
             const address = parts[3];
 
-            const initialBalance = await getUSDTBalance(address);
+            const initialBalance = (await getUSDTBalance(address)) || 0;
 
             // Cập nhật hoặc Thêm mới vào Database
             await Wallet.findOneAndUpdate(
@@ -175,6 +176,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
 
             await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã lưu ví thành công vào Database!*\n• *Nhóm:* ${group}\n• *Tên:* ${name}\n• *Địa chỉ:* \`${address}\`\n• *Số dư USDT:* $${initialBalance.toLocaleString('en-US')} USDT`);
         }
+
 
         // 2. Lệnh /delete <tên_hoặc_địa_chỉ>
         else if (command === '/delete') {
@@ -193,6 +195,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
         }
 
         // 3. Lệnh /list
+                // 3. Lệnh /list (Đã nâng cấp lấy số dư Live)
         else if (command === '/list') {
             const wallets = await Wallet.find();
             if (wallets.length === 0) {
@@ -200,11 +203,22 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
                 return res.sendStatus(200);
             }
             let msg = "📂 *DANH SÁCH VÍ USDT TRONG DATABASE*\n\n";
-            wallets.forEach((w, index) => {
+            for (let index = 0; index < wallets.length; index++) {
+                const w = wallets[index];
+                const liveBalance = await getUSDTBalance(w.address);
+                
+                // Nếu lấy được số dư live thì cập nhật lại luôn vào DB
+                if (liveBalance !== null && liveBalance !== w.balance) {
+                    w.balance = liveBalance;
+                    w.updatedAt = new Date();
+                    await w.save();
+                }
+
                 msg += `${index + 1}. *[${w.group}]* ${w.name}\n   • Ví: \`${w.address}\`\n   • Số dư: *$${w.balance.toLocaleString('en-US')} USDT*\n\n`;
-            });
+            }
             await sendTelegramMessage(BOT2_TOKEN, chatId, msg);
         }
+
 
         // 4. Lệnh /get <tên_hoặc_nhóm_hoặc_địa_chỉ>
         else if (command === '/get') {
