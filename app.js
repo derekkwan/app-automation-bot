@@ -110,16 +110,15 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
         const parts = text.split(/\s+/);
         const command = parts[0].toLowerCase();
 
-        // 1. Lệnh /get <tên / nhóm / địa_chỉ> (Tìm kiếm đa năng)
+        // 1. Lệnh /get <tên / nhóm / địa_chỉ>
         if (command === '/get') {
             if (parts.length < 2) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/get <tên_ví / nhóm_ví / địa_chỉ>`\n_VD: `/get companywallets`_");
+                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ *Cú pháp chưa đúng!*\n\n👉 Sử dụng: `/get <tên_ví | nhóm_ví | địa_chỉ>`\n_Ví dụ: `/get companywallets`_");
                 return res.sendStatus(200);
             }
 
             const keyword = parts.slice(1).join(' ').trim();
 
-            // Tìm kiếm đối chiếu qua cả 3 trường
             const wallets = await Wallet.find({
                 $or: [
                     { groupName: { $regex: keyword, $options: 'i' } },
@@ -153,30 +152,36 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
 
         // 2. Lệnh /add <địa_chỉ> <tên_ví> [tên_nhóm]
         else if (command === '/add') {
+            // Đảm bảo đủ ít nhất 2 tham số (địa chỉ & tên)
             if (parts.length < 3) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/add <địa_chỉ_ví> <tên_ví> [tên_nhóm]`\n_VD: `/add Txxx Ví_1 companywallets`_");
+                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ *Cú pháp thiếu tham số!*\n\n👉 Sử dụng: `/add <địa_chỉ_ví> <tên_ví> [tên_nhóm]`\n_Ví dụ: `/add Txxx Ví_Phụ_1 companywallets`_");
                 return res.sendStatus(200);
             }
+
             const address = parts[1];
             const name = parts[2];
             const groupName = parts[3] || 'Default';
 
-            const currentBalance = await getUSDTBalance(address);
-            if (currentBalance === null) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "❌ Địa chỉ ví TRON không hợp lệ hoặc lỗi kết nối API.");
-                return res.sendStatus(200);
+            try {
+                const currentBalance = await getUSDTBalance(address);
+                if (currentBalance === null || currentBalance === undefined) {
+                    await sendTelegramMessage(BOT2_TOKEN, chatId, "❌ Địa chỉ ví TRON không hợp lệ hoặc lỗi mạng.");
+                    return res.sendStatus(200);
+                }
+
+                await Wallet.findOneAndUpdate(
+                    { address },
+                    { name, groupName, balance: currentBalance },
+                    { upsert: true, new: true }
+                );
+
+                await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã lưu ví thành công!*\n• Tên: *${name}*\n• Nhóm: *${groupName}*\n• Địa chỉ: \`${address}\`\n• Số dư: *$${currentBalance.toLocaleString('en-US')} USDT*`);
+            } catch (err) {
+                await sendTelegramMessage(BOT2_TOKEN, chatId, `❌ Lỗi khi xử lý ví: ${err.message}`);
             }
-
-            await Wallet.findOneAndUpdate(
-                { address },
-                { name, groupName, balance: currentBalance },
-                { upsert: true, new: true }
-            );
-
-            await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã thêm/cập nhật ví thành công!*\n• Tên: *${name}*\n• Nhóm: *${groupName}*\n• Số dư: *$${currentBalance.toLocaleString('en-US')} USDT*`);
         }
 
-        // 3. Lệnh /list hoặc /check (Liệt kê tất cả ví)
+        // 3. Lệnh /list hoặc /check
         else if (command === '/list' || command === '/check') {
             const wallets = await Wallet.find();
             if (wallets.length === 0) {
@@ -195,7 +200,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
             }
         }
 
-        // 4. Lệnh /sync (Cập nhật thủ công ngay lập tức)
+        // 4. Lệnh /sync
         else if (command === '/sync') {
             await sendTelegramMessage(BOT2_TOKEN, chatId, "🔄 Đang đồng bộ dữ liệu ví...");
             await syncAllWallets();
@@ -207,6 +212,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
     }
     res.sendStatus(200);
 });
+
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
