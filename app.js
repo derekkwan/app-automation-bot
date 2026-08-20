@@ -67,7 +67,7 @@ async function sendTelegramMessage(token, chatId, message) {
 async function getUSDTBalance(address) {
     if (!address || !address.startsWith('T')) return 0;
 
-    // Nguồn 1: TRONSCAN API (Ưu tiên số 1 cho danh sách nhiều ví)
+    // Nguồn 1: TRONSCAN API (Ưu tiên số 1)
     try {
         const urlScan = `https://api.tronscan.org/api/account/tokens?address=${address}&start=0&limit=20`;
         const resScan = await fetch(urlScan, { headers });
@@ -78,11 +78,11 @@ async function getUSDTBalance(address) {
                 if (usdt) {
                     return parseFloat(usdt.balance) / Math.pow(10, usdt.tokenDecimal);
                 }
-                return 0; // Có dữ liệu nhưng 0 USDT
+                return 0;
             }
         }
     } catch (err) {
-        // Tự chuyển sang nguồn 2
+        // Tự chuyển sang nguồn 2 nếu lỗi
     }
 
     // Nguồn 2: TRONGRID API (Dự phòng)
@@ -105,7 +105,7 @@ async function getUSDTBalance(address) {
         console.error(`❌ Không thể quét được ví ${address}`);
     }
 
-    return null; // Không lấy được do lỗi cả 2 API
+    return null;
 }
 
 // ==========================================
@@ -140,14 +140,16 @@ async function syncAllWallets() {
             await w.save();
             updatedCount++;
         }
-        await sleep(500); // Giãn cách 500ms giữa các ví để không dính Rate Limit
+        await sleep(500);
     }
     return updatedCount;
 }
 
 // ==========================================
-// BOT 1: BÁO CÁO TÀI CHÍNH (10 PHÚT/LẦN)
+// BOT 1: CẢNH BÁO THỊ TRƯỜNG & BÁO CÁO ĐỊNH KỲ
 // ==========================================
+let previousPrices = {};
+
 async function getCryptoData() {
     try {
         const coinGroups = {
@@ -185,19 +187,54 @@ async function getCryptoData() {
     }
 }
 
-cron.schedule('*/10 * * * *', async () => {
+// 1. Kiểm tra biến động giá bất thường mỗi 5 phút (Chỉ báo khi biến động > 2.5%)
+cron.schedule('*/5 * * * *', async () => {
+    try {
+        const watchCoins = ['BTC', 'ETH', 'SOL', 'BNB', 'XRP'];
+        let alerts = [];
+
+        for (const coin of watchCoins) {
+            const res = await fetch(`https://api.coinbase.com/v2/prices/${coin}-USD/spot`, { headers });
+            const data = await res.json();
+            if (data?.data?.amount) {
+                const currentPrice = parseFloat(data.data.amount);
+                const lastPrice = previousPrices[coin];
+
+                if (lastPrice) {
+                    const percentChange = ((currentPrice - lastPrice) / lastPrice) * 100;
+                    if (Math.abs(percentChange) >= 2.5) {
+                        const icon = percentChange > 0 ? "🚀 *TĂNG VỌT*" : "🔻 *GIẢM MẠNH*";
+                        alerts.push(`• *${coin}:* ${icon} *${percentChange.toFixed(2)}%*\n  Giá hiện tại: *$${currentPrice.toLocaleString('en-US')}* (Giá cũ: $${lastPrice.toLocaleString('en-US')})`);
+                    }
+                }
+                previousPrices[coin] = currentPrice;
+            }
+            await sleep(200);
+        }
+
+        if (alerts.length > 0) {
+            const alertMessage = `⚡ *CẢNH BÁO BIẾN ĐỘNG THỊ TRƯỜNG*\n\n` + alerts.join('\n\n');
+            await sendTelegramMessage(BOT1_TOKEN, BOT1_CHAT_ID, alertMessage);
+        }
+    } catch (e) {
+        console.error("Lỗi Alert Bot 1:", e.message);
+    }
+});
+
+// 2. Báo cáo tổng hợp thị trường 3 lần/ngày (7h sáng, 12h trưa, 20h tối)
+cron.schedule('0 7,12,20 * * *', async () => {
     try {
         const cryptoData = await getCryptoData();
         const now = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
-        const message = `📊 *BÁO CÁO TÀI CHÍNH BOT 1 (${now})*\n\n🪙 *CÁC HỆ SINH THÁI CRYPTO:*\n${cryptoData}`;
+        const message = `☀️ *BÁO CÁO THỊ TRƯỜNG ĐỊNH KỲ (${now})*\n\n🪙 *BẢNG GIÁ CRYPTO:* \n${cryptoData}`;
         await sendTelegramMessage(BOT1_TOKEN, BOT1_CHAT_ID, message);
     } catch (e) {
-        console.error("Lỗi Bot 1:", e.message);
+        console.error("Lỗi Cron Bot 1:", e.message);
     }
 });
 
 // ==========================================
-// BOT 2: TƯƠNG TÁC BOT (ĐỌC TRỰC TIẾP TỪ DB)
+// BOT 2: QUẢN LÝ VÍ USDT (DATABASE MONGODB)
 // ==========================================
 app.post('/telegram-webhook-bot2', async (req, res) => {
     try {
@@ -286,11 +323,11 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
             }
         }
 
-        // 5. Lệnh /sync: Ép hệ thống đồng bộ toàn bộ ví ngay lập tức
+        // 5. Lệnh /sync (Cập nhật thủ công)
         else if (command === '/sync') {
-            await sendTelegramMessage(BOT2_TOKEN, chatId, "🔄 *Đang tiến hành quét và cập nhật số dư cho toàn bộ ví... Vui lòng đợi trong giây lát.*");
+            await sendTelegramMessage(BOT2_TOKEN, chatId, "🔄 *Đang quét và cập nhật số dư toàn bộ ví vào DB... Vui lòng đợi trong giây lát.*");
             const count = await syncAllWallets();
-            await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã hoàn tất đồng bộ!* Đã cập nhật thành công ${count} ví vào Database. Dùng lệnh \`/get companywallets\` để kiểm tra.`);
+            await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã hoàn tất đồng bộ!* Cập nhật thành công ${count} ví. Gõ lệnh \`/get companywallets\` để kiểm tra lại.`);
         }
 
         // Trợ giúp
@@ -300,7 +337,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
                 "• `/delete <tên_hoặc_địa_chỉ>` : Xóa ví\n" +
                 "• `/list` : Xem toàn bộ ví từ Database\n" +
                 "• `/get <tên/nhóm/địa_chỉ>` : Tra cứu ví từ Database\n" +
-                "• `/sync` : Ép đồng bộ số dư live tất cả các ví vào DB ngay lập tức");
+                "• `/sync` : Ép quét số dư tất cả các ví vào DB ngay lập tức");
         }
     } catch (e) {
         console.error("Lỗi Webhook Bot 2:", e.message);
@@ -310,7 +347,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
 });
 
 // ==========================================
-// VÒNG LẶP CẬP NHẬT SỐ DƯ TỰ ĐỘNG (3 PHÚT / LẦN)
+// TỰ ĐỘNG ĐỒNG BỘ SỐ DƯ TẤT CẢ VÍ (3 PHÚT / LẦN)
 // ==========================================
 cron.schedule('*/3 * * * *', async () => {
     try {
