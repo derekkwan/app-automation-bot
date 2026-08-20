@@ -62,54 +62,91 @@ async function sendTelegramMessage(token, chatId, message) {
 }
 
 // ==========================================
-// API TRA CỨU SỐ DƯ LIVE (TRONGRID + TRONSCAN)
+// API TRA CỨU SỐ DƯ LIVE (ĐA NGUỒN CHỐNG BLOCK)
 // ==========================================
 async function getUSDTBalance(address) {
     if (!address || !address.startsWith('T')) return 0;
 
-    // Cách 1: Thử TronGrid API
-    try {
-        const url = `https://api.trongrid.io/v1/accounts/${address}`;
-        const res = await fetch(url, { headers });
-        const data = await res.json();
-
-        if (data && data.data && data.data.length > 0) {
-            const account = data.data[0];
-            const trc20List = account.trc20 || [];
-            
-            for (const item of trc20List) {
-                if (item['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t']) {
-                    const rawBalance = item['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'];
-                    return parseFloat(rawBalance) / 1000000;
-                }
-            }
-            return 0;
-        }
-    } catch (err) {
-        console.warn(`[TronGrid Fail] Thử API dự phòng cho ví ${address}...`);
-    }
-
-    // Cách 2: Dự phòng Tronscan API
+    // Nguồn 1: TRONSCAN API (Ưu tiên số 1 cho danh sách nhiều ví)
     try {
         const urlScan = `https://api.tronscan.org/api/account/tokens?address=${address}&start=0&limit=20`;
         const resScan = await fetch(urlScan, { headers });
-        const dataScan = await resScan.json();
-
-        if (dataScan && dataScan.data) {
-            const usdt = dataScan.data.find(t => t.tokenId === 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t');
-            if (usdt) {
-                return parseFloat(usdt.balance) / Math.pow(10, usdt.tokenDecimal);
+        if (resScan.ok) {
+            const dataScan = await resScan.json();
+            if (dataScan && dataScan.data) {
+                const usdt = dataScan.data.find(t => t.tokenId === 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t');
+                if (usdt) {
+                    return parseFloat(usdt.balance) / Math.pow(10, usdt.tokenDecimal);
+                }
+                return 0; // Có dữ liệu nhưng 0 USDT
             }
         }
     } catch (err) {
-        console.error(`Lỗi lấy số dư ví ${address}:`, err.message);
+        // Tự chuyển sang nguồn 2
     }
 
-    return null;
+    // Nguồn 2: TRONGRID API (Dự phòng)
+    try {
+        const urlGrid = `https://api.trongrid.io/v1/accounts/${address}`;
+        const resGrid = await fetch(urlGrid, { headers });
+        if (resGrid.ok) {
+            const dataGrid = await resGrid.json();
+            if (dataGrid && dataGrid.data && dataGrid.data.length > 0) {
+                const trc20List = dataGrid.data[0].trc20 || [];
+                for (const item of trc20List) {
+                    if (item['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t']) {
+                        return parseFloat(item['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t']) / 1000000;
+                    }
+                }
+                return 0;
+            }
+        }
+    } catch (err) {
+        console.error(`❌ Không thể quét được ví ${address}`);
+    }
+
+    return null; // Không lấy được do lỗi cả 2 API
 }
 
 // ==========================================
-// BOT 1: BÁO CÁO TÀI CHÍNH ĐỊNH KỲ (10 PHÚT/LẦN)
+// HÀM CHẠY ĐỒNG BỘ TOÀN BỘ VÍ VÀO DATABASE
+// ==========================================
+async function syncAllWallets() {
+    const wallets = await Wallet.find();
+    if (wallets.length === 0) return 0;
+
+    let updatedCount = 0;
+    for (const w of wallets) {
+        const newBalance = await getUSDTBalance(w.address);
+
+        if (newBalance !== null) {
+            if (newBalance !== w.balance) {
+                const diff = newBalance - w.balance;
+                const statusEmoji = diff > 0 ? "🟢 *SỐ DƯ TĂNG*" : "🔴 *SỐ DƯ GIẢM*";
+                const changeStr = diff > 0 ? `+$${diff.toLocaleString('en-US')}` : `-$${Math.abs(diff).toLocaleString('en-US')}`;
+
+                const alertMsg = `🔔 *CẢNH BÁO BIẾN ĐỘNG SỐ DƯ VÍ USDT*\n\n` +
+                                 `• Status: ${statusEmoji}\n` +
+                                 `• Tên ví: *${w.name}* (Nhóm: ${w.group})\n` +
+                                 `• ĐC: \`${w.address}\`\n` +
+                                 `• Biến động: *${changeStr} USDT*\n` +
+                                 `• Số dư mới: *$${newBalance.toLocaleString('en-US')} USDT*`;
+
+                await sendTelegramMessage(BOT2_TOKEN, BOT2_CHAT_ID, alertMsg);
+
+                w.balance = newBalance;
+            }
+            w.updatedAt = new Date();
+            await w.save();
+            updatedCount++;
+        }
+        await sleep(500); // Giãn cách 500ms giữa các ví để không dính Rate Limit
+    }
+    return updatedCount;
+}
+
+// ==========================================
+// BOT 1: BÁO CÁO TÀI CHÍNH (10 PHÚT/LẦN)
 // ==========================================
 async function getCryptoData() {
     try {
@@ -160,7 +197,7 @@ cron.schedule('*/10 * * * *', async () => {
 });
 
 // ==========================================
-// BOT 2: TƯƠNG TÁC BOT (ĐỌC TRỰC TIẾP TỪ DATABASE)
+// BOT 2: TƯƠNG TÁC BOT (ĐỌC TRỰC TIẾP TỪ DB)
 // ==========================================
 app.post('/telegram-webhook-bot2', async (req, res) => {
     try {
@@ -172,7 +209,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
         const parts = text.split(/\s+/);
         const command = parts[0].toLowerCase();
 
-        // 1. Lệnh /add <nhóm> <tên> <địa_chỉ>: Quét số dư live rồi lưu ngay vào Database
+        // 1. Lệnh /add
         if (command === '/add') {
             if (parts.length < 4) {
                 await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/add <nhóm> <tên> <địa_chỉ_usdt>`");
@@ -194,7 +231,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
             await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã lưu ví vào Database!*\n• *Nhóm:* ${group}\n• *Tên:* ${name}\n• *Địa chỉ:* \`${address}\`\n• *Số dư USDT:* $${initialBalance.toLocaleString('en-US')} USDT`);
         }
 
-        // 2. Lệnh /delete <tên_hoặc_địa_chỉ>
+        // 2. Lệnh /delete
         else if (command === '/delete') {
             if (parts.length < 2) {
                 await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/delete <tên_hoặc_địa_chỉ>`");
@@ -210,7 +247,7 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
             }
         }
 
-        // 3. Lệnh /list: Đọc trực tiếp từ Database (Siêu nhanh, không lag)
+        // 3. Lệnh /list
         else if (command === '/list') {
             const wallets = await Wallet.find();
             if (wallets.length === 0) {
@@ -221,13 +258,13 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
             let msg = "📂 *DANH SÁCH VÍ USDT TRONG DATABASE*\n\n";
             wallets.forEach((w, index) => {
                 const timeStr = w.updatedAt ? new Date(w.updatedAt).toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '';
-                msg += `${index + 1}. *[${w.group}]* ${w.name}\n   • Ví: \`${w.address}\`\n   • Số dư: *$${w.balance.toLocaleString('en-US')} USDT* _(Cập nhật: ${timeStr})_\n\n`;
+                msg += `${index + 1}. *[${w.group}]* ${w.name}\n   • Ví: \`${w.address}\`\n   • Số dư DB: *$${w.balance.toLocaleString('en-US')} USDT* _(${timeStr})_\n\n`;
             });
             
             await sendTelegramMessage(BOT2_TOKEN, chatId, msg);
         }
 
-        // 4. Lệnh /get <tên_hoặc_nhóm_hoặc_địa_chỉ>: Đọc trực tiếp từ Database
+        // 4. Lệnh /get
         else if (command === '/get') {
             if (parts.length < 2) {
                 await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/get <tên / nhóm / địa_chỉ>`");
@@ -249,13 +286,21 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
             }
         }
 
+        // 5. Lệnh /sync: Ép hệ thống đồng bộ toàn bộ ví ngay lập tức
+        else if (command === '/sync') {
+            await sendTelegramMessage(BOT2_TOKEN, chatId, "🔄 *Đang tiến hành quét và cập nhật số dư cho toàn bộ ví... Vui lòng đợi trong giây lát.*");
+            const count = await syncAllWallets();
+            await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã hoàn tất đồng bộ!* Đã cập nhật thành công ${count} ví vào Database. Dùng lệnh \`/get companywallets\` để kiểm tra.`);
+        }
+
         // Trợ giúp
         else {
             await sendTelegramMessage(BOT2_TOKEN, chatId, "🤖 *CÁC LỆNH BOT 2 (LƯU MONGODB):*\n\n" +
                 "• `/add <nhóm> <tên> <địa_chỉ>` : Thêm ví & lấy số dư ban đầu\n" +
                 "• `/delete <tên_hoặc_địa_chỉ>` : Xóa ví\n" +
                 "• `/list` : Xem toàn bộ ví từ Database\n" +
-                "• `/get <tên/nhóm/địa_chỉ>` : Tra cứu ví từ Database");
+                "• `/get <tên/nhóm/địa_chỉ>` : Tra cứu ví từ Database\n" +
+                "• `/sync` : Ép đồng bộ số dư live tất cả các ví vào DB ngay lập tức");
         }
     } catch (e) {
         console.error("Lỗi Webhook Bot 2:", e.message);
@@ -265,46 +310,11 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
 });
 
 // ==========================================
-// VÒNG LẶP CẬP NHẬT SỐ DƯ TỰ ĐỘNG (2 PHÚT / LẦN)
+// VÒNG LẶP CẬP NHẬT SỐ DƯ TỰ ĐỘNG (3 PHÚT / LẦN)
 // ==========================================
-cron.schedule('*/2 * * * *', async () => {
+cron.schedule('*/3 * * * *', async () => {
     try {
-        const wallets = await Wallet.find();
-        if (wallets.length === 0) return;
-
-        for (const w of wallets) {
-            const newBalance = await getUSDTBalance(w.address);
-
-            // Chỉ cập nhật khi lấy thành công số dư từ Blockchain
-            if (newBalance !== null) {
-                // Kiểm tra xem số dư có bị thay đổi không
-                if (newBalance !== w.balance) {
-                    const diff = newBalance - w.balance;
-                    const statusEmoji = diff > 0 ? "🟢 *SỐ DƯ TĂNG*" : "🔴 *SỐ DƯ GIẢM*";
-                    const changeStr = diff > 0 ? `+$${diff.toLocaleString('en-US')}` : `-$${Math.abs(diff).toLocaleString('en-US')}`;
-
-                    const alertMsg = `🔔 *CẢNH BÁO BIẾN ĐỘNG SỐ DƯ VÍ USDT*\n\n` +
-                                     `• Status: ${statusEmoji}\n` +
-                                     `• Tên ví: *${w.name}* (Nhóm: ${w.group})\n` +
-                                     `• ĐC: \`${w.address}\`\n` +
-                                     `• Biến động: *${changeStr} USDT*\n` +
-                                     `• Số dư mới: *$${newBalance.toLocaleString('en-US')} USDT*`;
-
-                    // Gửi tin nhắn cảnh báo biến động
-                    await sendTelegramMessage(BOT2_TOKEN, BOT2_CHAT_ID, alertMsg);
-
-                    // Cập nhật số dư mới vào MongoDB
-                    w.balance = newBalance;
-                    w.updatedAt = new Date();
-                    await w.save();
-                } else {
-                    // Cập nhật thời điểm vừa sync
-                    w.updatedAt = new Date();
-                    await w.save();
-                }
-            }
-            await sleep(400); // Trễ 400ms giữa các ví để không quá tải API
-        }
+        await syncAllWallets();
     } catch (e) {
         console.error("Lỗi Auto Sync Database:", e.message);
     }
