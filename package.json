@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "node-cron": "^3.0.3",
+    "mongoose": "^8.0.0",
     "express": "^4.19.2"
   }
 }
