@@ -72,25 +72,33 @@ async function sendTelegramMessage(token, chatId, message) {
 // ==========================================
 async function getUSDTBalance(address) {
     try {
-        if (address.startsWith('T')) {
-            const url = `https://api.tronscan.org/api/account?address=${address}`;
-            const res = await fetch(url, { headers });
-            const data = await res.json();
+        if (!address || !address.startsWith('T')) return 0;
+
+        // Dùng API v1 chính thức từ Trongrid
+        const url = `https://api.trongrid.io/v1/accounts/${address}`;
+        const res = await fetch(url, { headers });
+        const data = await res.json();
+
+        if (data && data.data && data.data.length > 0) {
+            const account = data.data[0];
+            // Tìm token USDT (Địa chỉ hợp đồng TRC20 USDT: TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t)
+            const trc20List = account.trc20 || [];
             
-            if (data && data.trc20token_balances) {
-                const usdtToken = data.trc20token_balances.find(t => t.tokenId === 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t');
-                if (usdtToken) {
-                    const balance = parseFloat(usdtToken.balance) / Math.pow(10, usdtToken.tokenDecimal);
-                    return balance;
+            for (const item of trc20List) {
+                if (item['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t']) {
+                    const rawBalance = item['TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'];
+                    // USDT có 6 chữ số thập phân (decimals = 6)
+                    return parseFloat(rawBalance) / 1000000;
                 }
             }
         }
         return 0;
     } catch (err) {
         console.error(`Lỗi lấy số dư ví ${address}:`, err.message);
-        return null;
+        return 0;
     }
 }
+
 
 // ==========================================
 // BOT 1: BÁO CÁO TÀI CHÍNH ĐỊNH KỲ (10 PHÚT/LẦN)
