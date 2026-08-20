@@ -1,24 +1,8 @@
-const express = require('express');
-const connectDB = require('./config/db');
-const Wallet = require('./models/Wallet');
-const { sendTelegramMessage } = require('./services/telegram');
-const { getUSDTBalance } = require('./services/crypto');
-const initBot1Jobs = require('./jobs/bot1Jobs');
-const { initBot2Jobs, syncAllWallets } = require('./jobs/bot2Jobs');
+const Alert = require('./models/Alert');
+const BOT1_TOKEN = process.env.TELEGRAM_TOKEN;
 
-const app = express();
-app.use(express.json());
-
-const PORT = process.env.PORT || 3000;
-const BOT2_TOKEN = process.env.TELEGRAM_TOKEN_2;
-
-// Kết nối DB & Khởi chạy Cron Jobs
-connectDB();
-initBot1Jobs();
-initBot2Jobs();
-
-// WEBHOOK BOT 2
-app.post('/telegram-webhook-bot2', async (req, res) => {
+// WEBHOOK BOT 1 (Tra cứu giá & Đặt cảnh báo)
+app.post('/telegram-webhook-bot1', async (req, res) => {
     try {
         const message = req.body?.message;
         if (!message || !message.text) return res.sendStatus(200);
@@ -28,79 +12,80 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
         const parts = text.split(/\s+/);
         const command = parts[0].toLowerCase();
 
-        if (command === '/add') {
-            if (parts.length < 4) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/add <nhóm> <tên> <địa_chỉ_usdt>`");
-                return res.sendStatus(200);
-            }
-            const [_, group, name, address] = parts;
-            const fetchedBalance = await getUSDTBalance(address);
-            const initialBalance = fetchedBalance !== null ? fetchedBalance : 0;
-
-            await Wallet.findOneAndUpdate(
-                { name: name },
-                { group, name, address, balance: initialBalance, updatedAt: new Date() },
-                { upsert: true, new: true }
-            );
-
-            await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã lưu ví vào Database!*\n• *Nhóm:* ${group}\n• *Tên:* ${name}\n• *Địa chỉ:* \`${address}\`\n• *Số dư USDT:* $${initialBalance.toLocaleString('en-US')} USDT`);
-        } 
-        else if (command === '/delete') {
-            if (parts.length < 2) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/delete <tên_hoặc_địa_chỉ>`");
-                return res.sendStatus(200);
-            }
-            const keyword = parts[1];
-            const deleted = await Wallet.findOneAndDelete({ $or: [{ name: keyword }, { address: keyword }] });
-            const msg = deleted ? `🗑️ *Đã xóa ví:* ${deleted.name}` : `❌ Không tìm thấy ví nào khớp với "${keyword}".`;
-            await sendTelegramMessage(BOT2_TOKEN, chatId, msg);
-        } 
-        else if (command === '/list') {
-            const wallets = await Wallet.find();
-            if (wallets.length === 0) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "📂 Chưa có ví nào trong Database.");
-                return res.sendStatus(200);
-            }
-            let msg = "📂 *DANH SÁCH VÍ USDT TRONG DATABASE*\n\n";
-            wallets.forEach((w, index) => {
-                const timeStr = w.updatedAt ? new Date(w.updatedAt).toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '';
-                msg += `${index + 1}. *[${w.group}]* ${w.name}\n   • Ví: \`${w.address}\`\n   • Số dư DB: *$${w.balance.toLocaleString('en-US')} USDT* _(${timeStr})_\n\n`;
-            });
-            await sendTelegramMessage(BOT2_TOKEN, chatId, msg);
-        } 
-        else if (command === '/get') {
-            if (parts.length < 2) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/get <tên / nhóm / địa_chỉ>`");
-                return res.sendStatus(200);
-            }
-            const query = parts[1];
-            const regex = new RegExp(query, 'i');
-            const matches = await Wallet.find({ $or: [{ name: regex }, { group: regex }, { address: query }] });
-
-            if (matches.length === 0) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, `❌ Không tìm thấy dữ liệu khớp với "${query}".`);
-            } else {
-                let msg = `🔍 *KẾT QUẢ TRA CỨU DB:* "${query}"\n\n`;
-                matches.forEach(w => {
-                    const timeStr = w.updatedAt ? new Date(w.updatedAt).toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : '';
-                    msg += `📌 *${w.name}* (Nhóm: ${w.group})\n• ĐC: \`${w.address}\`\n• Số dư DB: *$${w.balance.toLocaleString('en-US')} USDT* _(${timeStr})_\n\n`;
-                });
-                await sendTelegramMessage(BOT2_TOKEN, chatId, msg);
-            }
-        } 
-        else if (command === '/sync') {
-            await sendTelegramMessage(BOT2_TOKEN, chatId, "🔄 *Đang quét và cập nhật số dư toàn bộ ví vào DB...*");
-            const count = await syncAllWallets();
-            await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã hoàn tất đồng bộ!* Cập nhật thành công ${count} ví.`);
-        } 
-        else {
-            await sendTelegramMessage(BOT2_TOKEN, chatId, "🤖 *CÁC LỆNH BOT 2:*\n\n• `/add` | `/delete` | `/list` | `/get` | `/sync`");
+        // 1. Lệnh /market (Xem toàn bộ bảng giá)
+        if (command === '/market') {
+            const cryptoData = await getCryptoData();
+            await sendTelegramMessage(BOT1_TOKEN, chatId, `🪙 *BẢNG GIÁ THỊ TRƯỜNG LIVE:*\n\n${cryptoData}`);
         }
+
+        // 2. Lệnh /price <coin> (VD: /price btc)
+        else if (command === '/price') {
+            if (parts.length < 2) {
+                await sendTelegramMessage(BOT1_TOKEN, chatId, "⚠️ Cú pháp: `/price <mã_coin>` (VD: `/price btc`)");
+                return res.sendStatus(200);
+            }
+            const symbol = parts[1].toUpperCase();
+            try {
+                const resPrice = await fetch(`https://api.coinbase.com/v2/prices/${symbol}-USD/spot`);
+                const data = await resPrice.json();
+                if (data?.data?.amount) {
+                    const price = parseFloat(data.data.amount).toLocaleString('en-US');
+                    await sendTelegramMessage(BOT1_TOKEN, chatId, `💰 Giá *${symbol}* hiện tại: *$${price} USDT*`);
+                } else {
+                    await sendTelegramMessage(BOT1_TOKEN, chatId, `❌ Không tìm thấy thông tin cho coin *${symbol}*.`);
+                }
+            } catch (err) {
+                await sendTelegramMessage(BOT1_TOKEN, chatId, "❌ Lỗi khi lấy giá coin.");
+            }
+        }
+
+        // 3. Lệnh /alert <coin> <mức_giá> (VD: /alert btc 100000)
+        else if (command === '/alert') {
+            if (parts.length < 3) {
+                await sendTelegramMessage(BOT1_TOKEN, chatId, "⚠️ Cú pháp: `/alert <mã_coin> <giá_mục_tiêu>`\n_VD: `/alert btc 100000`_");
+                return res.sendStatus(200);
+            }
+            const symbol = parts[1].toUpperCase();
+            const targetPrice = parseFloat(parts[2]);
+
+            if (isNaN(targetPrice)) {
+                await sendTelegramMessage(BOT1_TOKEN, chatId, "⚠️ Mức giá không hợp lệ.");
+                return res.sendStatus(200);
+            }
+
+            // Lấy giá hiện tại để xác định điều kiện Tăng lên hay Giảm xuống
+            const resPrice = await fetch(`https://api.coinbase.com/v2/prices/${symbol}-USD/spot`);
+            const data = await resPrice.json();
+            
+            if (data?.data?.amount) {
+                const currentPrice = parseFloat(data.data.amount);
+                const condition = targetPrice > currentPrice ? 'ABOVE' : 'BELOW';
+
+                await Alert.create({ chatId, symbol, targetPrice, condition });
+                
+                const condText = condition === 'ABOVE' ? 'vượt lên trên' : 'giảm xuống dưới';
+                await sendTelegramMessage(BOT1_TOKEN, chatId, `✅ *Đã đặt cảnh báo!*\n• Coin: *${symbol}*\n• Giá hiện tại: *$${currentPrice.toLocaleString('en-US')}*\n• Sẽ báo khi giá ${condText}: *$${targetPrice.toLocaleString('en-US')}*`);
+            } else {
+                await sendTelegramMessage(BOT1_TOKEN, chatId, `❌ Không tìm thấy coin *${symbol}*.`);
+            }
+        }
+
+        // 4. Lệnh /myalerts (Xem danh sách cảnh báo đã đặt)
+        else if (command === '/myalerts') {
+            const list = await Alert.find({ chatId });
+            if (list.length === 0) {
+                await sendTelegramMessage(BOT1_TOKEN, chatId, "📂 Bạn chưa đặt cảnh báo giá nào.");
+            } else {
+                let msg = "🔔 *DANH SÁCH CẢNH BÁO CỦA BẠN:*\n\n";
+                list.forEach((item, index) => {
+                    msg += `${index + 1}. *${item.symbol}* khi chạm mốc *$${item.targetPrice.toLocaleString('en-US')}*\n`;
+                });
+                await sendTelegramMessage(BOT1_TOKEN, chatId, msg);
+            }
+        }
+
     } catch (e) {
-        console.error("Lỗi Webhook Bot 2:", e.message);
+        console.error("Lỗi Webhook Bot 1:", e.message);
     }
     res.sendStatus(200);
 });
-
-app.get('/', (req, res) => res.send('Server Modular đang hoạt động!'));
-app.listen(PORT, () => console.log(`Server chạy trên port ${PORT}`));
