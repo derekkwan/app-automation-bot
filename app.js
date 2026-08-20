@@ -14,12 +14,12 @@ const PORT = process.env.PORT || 3000;
 const BOT1_TOKEN = process.env.TELEGRAM_TOKEN;
 const BOT2_TOKEN = process.env.TELEGRAM_TOKEN_2;
 
-// Kết nối Database & Khởi chạy Cron Jobs cho cả 2 Bot
+// Kết nối Database & Khởi chạy Cron Jobs ngầm cho 2 Bot
 connectDB();
 initBot1Jobs();
 initBot2Jobs();
 
-// Route kiểm tra trang chủ
+// Route trang chủ kiểm tra server
 app.get('/', (req, res) => {
     res.send('Server Telegram Bots đang chạy bình thường!');
 });
@@ -62,7 +62,7 @@ app.post('/telegram-webhook-bot1', async (req, res) => {
                 await sendTelegramMessage(BOT1_TOKEN, chatId, "❌ Lỗi khi lấy giá.");
             }
         }
-        // 3. Lệnh /alert <coin> <giá>
+        // 3. Lệnh /alert <coin> <mức_giá>
         else if (command === '/alert') {
             if (parts.length < 3) {
                 await sendTelegramMessage(BOT1_TOKEN, chatId, "⚠️ Cú pháp: `/alert <mã_coin> <giá>`\n_VD: `/alert btc 100000`_");
@@ -98,7 +98,7 @@ app.post('/telegram-webhook-bot1', async (req, res) => {
 });
 
 // ====================================================
-// WEBHOOK BOT 2 (QUẢN LÝ VÍ & TỔNG SỐ DƯ)
+// WEBHOOK BOT 2 (QUẢN LÝ VÍ & TỔNG SỐ DƯ USDT TRON)
 // ====================================================
 app.post('/telegram-webhook-bot2', async (req, res) => {
     try {
@@ -110,51 +110,73 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
         const parts = text.split(/\s+/);
         const command = parts[0].toLowerCase();
 
-        // 1. Lệnh /get <tên_ví>
+        // 1. Lệnh /get <tên / nhóm / địa_chỉ> (Tìm kiếm đa năng)
         if (command === '/get') {
             if (parts.length < 2) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/get <tên_ví>`\n_VD: `/get companywallets`_");
+                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/get <tên_ví / nhóm_ví / địa_chỉ>`\n_VD: `/get companywallets`_");
                 return res.sendStatus(200);
             }
-            const searchName = parts.slice(1).join(' ');
-            const wallet = await Wallet.findOne({ name: { $regex: new RegExp(`^${searchName}$`, 'i') } });
 
-            if (!wallet) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, `❌ Không tìm thấy ví nào có tên: *${searchName}*`);
+            const keyword = parts.slice(1).join(' ').trim();
+
+            // Tìm kiếm đối chiếu qua cả 3 trường
+            const wallets = await Wallet.find({
+                $or: [
+                    { groupName: { $regex: keyword, $options: 'i' } },
+                    { name: { $regex: keyword, $options: 'i' } },
+                    { address: { $regex: keyword, $options: 'i' } }
+                ]
+            });
+
+            if (wallets.length === 0) {
+                await sendTelegramMessage(BOT2_TOKEN, chatId, `❌ Không tìm thấy dữ liệu nào phù hợp với: *${keyword}*`);
             } else {
-                const msg = `💳 *THÔNG TIN CHI TIẾT VÍ*\n\n` +
-                            `• Tên ví: *${wallet.name}*\n` +
-                            `• Địa chỉ: \`${wallet.address}\`\n` +
-                            `• Số dư USDT: *$${wallet.balance.toLocaleString('en-US')} USDT*`;
+                let total = 0;
+                let msg = `🔍 *KẾT QUẢ TÌM KIẾM CHO "${keyword}":*\n\n`;
+
+                wallets.forEach((w, i) => {
+                    const balance = w.balance || 0;
+                    total += balance;
+                    const groupInfo = w.groupName ? ` [${w.groupName}]` : '';
+                    msg += `${i + 1}. *${w.name}*${groupInfo}\n` +
+                           `   • Địa chỉ: \`${w.address}\`\n` +
+                           `   • Số dư: *$${balance.toLocaleString('en-US')} USDT*\n\n`;
+                });
+
+                if (wallets.length > 1) {
+                    msg += `💰 *TỔNG TẤT CẢ:* *$${total.toLocaleString('en-US')} USDT*`;
+                }
+
                 await sendTelegramMessage(BOT2_TOKEN, chatId, msg);
             }
         }
 
-        // 2. Lệnh /add <địa_chỉ> <tên_ví>
+        // 2. Lệnh /add <địa_chỉ> <tên_ví> [tên_nhóm]
         else if (command === '/add') {
             if (parts.length < 3) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/add <địa_chỉ_ví_TRON> <tên_ví>`\n_VD: `/add Txxx Ví_Chính`_");
+                await sendTelegramMessage(BOT2_TOKEN, chatId, "⚠️ Cú pháp: `/add <địa_chỉ_ví> <tên_ví> [tên_nhóm]`\n_VD: `/add Txxx Ví_1 companywallets`_");
                 return res.sendStatus(200);
             }
             const address = parts[1];
-            const name = parts.slice(2).join(' ');
+            const name = parts[2];
+            const groupName = parts[3] || 'Default';
 
             const currentBalance = await getUSDTBalance(address);
             if (currentBalance === null) {
-                await sendTelegramMessage(BOT2_TOKEN, chatId, "❌ Địa chỉ ví TRON không hợp lệ hoặc lỗi kết nối.");
+                await sendTelegramMessage(BOT2_TOKEN, chatId, "❌ Địa chỉ ví TRON không hợp lệ hoặc lỗi kết nối API.");
                 return res.sendStatus(200);
             }
 
             await Wallet.findOneAndUpdate(
                 { address },
-                { name, balance: currentBalance },
+                { name, groupName, balance: currentBalance },
                 { upsert: true, new: true }
             );
 
-            await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã thêm ví thành công!*\n• Tên: *${name}*\n• Số dư: *$${currentBalance.toLocaleString('en-US')} USDT*`);
+            await sendTelegramMessage(BOT2_TOKEN, chatId, `✅ *Đã thêm/cập nhật ví thành công!*\n• Tên: *${name}*\n• Nhóm: *${groupName}*\n• Số dư: *$${currentBalance.toLocaleString('en-US')} USDT*`);
         }
 
-        // 3. Lệnh /list hoặc /check
+        // 3. Lệnh /list hoặc /check (Liệt kê tất cả ví)
         else if (command === '/list' || command === '/check') {
             const wallets = await Wallet.find();
             if (wallets.length === 0) {
@@ -163,15 +185,17 @@ app.post('/telegram-webhook-bot2', async (req, res) => {
                 let total = 0;
                 let msg = "💳 *DANH SÁCH VÍ THEO DÕI:*\n\n";
                 wallets.forEach((w, i) => {
-                    total += w.balance;
-                    msg += `${i + 1}. *${w.name}*\n   • Số dư: *$${w.balance.toLocaleString('en-US')} USDT*\n`;
+                    const balance = w.balance || 0;
+                    total += balance;
+                    const groupInfo = w.groupName ? ` [${w.groupName}]` : '';
+                    msg += `${i + 1}. *${w.name}*${groupInfo}\n   • Số dư: *$${balance.toLocaleString('en-US')} USDT*\n`;
                 });
                 msg += `\n💰 *TỔNG CỘNG:* *$${total.toLocaleString('en-US')} USDT*`;
                 await sendTelegramMessage(BOT2_TOKEN, chatId, msg);
             }
         }
 
-        // 4. Lệnh /sync
+        // 4. Lệnh /sync (Cập nhật thủ công ngay lập tức)
         else if (command === '/sync') {
             await sendTelegramMessage(BOT2_TOKEN, chatId, "🔄 Đang đồng bộ dữ liệu ví...");
             await syncAllWallets();
